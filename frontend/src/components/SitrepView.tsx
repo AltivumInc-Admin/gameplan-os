@@ -55,10 +55,13 @@ function DayTimeline({ blocks }: { blocks: TimeBlock[] }) {
   const scheduled = parsed.reduce((acc, b) => acc + (b.e - b.s), 0)
   const scheduledH = (scheduled / 60).toFixed(1)
 
-  const hourLabels: string[] = []
+  const hourLabels: { label: string; pct: number }[] = []
   const step = hours > 12 ? 4 : 2
   for (let m = dayStart; m <= dayEnd; m += step * 60) {
-    hourLabels.push(`${String(Math.floor(m / 60)).padStart(2, '0')}:00`)
+    hourLabels.push({
+      label: `${String(Math.floor(m / 60)).padStart(2, '0')}:00`,
+      pct: ((m - dayStart) / span) * 100,
+    })
   }
 
   return (
@@ -81,7 +84,9 @@ function DayTimeline({ blocks }: { blocks: TimeBlock[] }) {
       </div>
       <div className="tl-hours" aria-hidden="true">
         {hourLabels.map((h) => (
-          <span key={h}>{h}</span>
+          <span key={h.label} style={{ left: `${h.pct}%` }}>
+            {h.label}
+          </span>
         ))}
       </div>
       <div className="tl-legend">

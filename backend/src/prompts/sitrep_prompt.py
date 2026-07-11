@@ -84,7 +84,7 @@ def build_user_prompt(*, today: str, weekday: str, local_now: str,
         [{"date": d.get("date"), "answers": d.get("answers"),
           "analysis_summary": (d.get("analysis") or {}).get("summary")}
          for d in recent_debriefs], default=str) or "[]"
-    yesterday_mission = "(no prior SITREP)"
+    yesterday_mission = "(no prior plan on record)"
     if yesterday_sitrep:
         yesterday_mission = json.dumps({
             "mission": yesterday_sitrep.get("body", {}).get("mission"),

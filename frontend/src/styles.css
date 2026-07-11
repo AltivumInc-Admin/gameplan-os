@@ -323,18 +323,28 @@ section.para li::marker { color: var(--faint); }
   color: var(--green);
   padding: 3px 6px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   letter-spacing: 0.04em;
 }
 
 .tl-hours {
-  display: flex;
-  justify-content: space-between;
+  position: relative;
+  height: 1rem;
   font-family: var(--mono);
   font-size: 0.6rem;
   color: var(--faint);
   margin-top: 0.45rem;
   font-variant-numeric: tabular-nums;
 }
+
+.tl-hours span {
+  position: absolute;
+  transform: translateX(-50%);
+}
+
+.tl-hours span:first-child { transform: none; }
+.tl-hours span:last-child { transform: translateX(-100%); }
 
 .tl-legend {
   display: flex;
