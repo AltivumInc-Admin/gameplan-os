@@ -55,8 +55,11 @@ correct: the evening debrief, which really is an end-of-day situation report.
 
 ## How I Built It
 
-[TODO: 2–3 sentences on your actual Friday/Saturday timeline — when you
-started, when the first order generated, what you did in parallel.]
+I started Friday with the backend: SAM stack up (Lambda, DynamoDB, API
+Gateway, EventBridge Scheduler, SES), and the first real game plan generated
+within the hour — one mission, five time blocks, two tasks explicitly dropped
+with reasons. Saturday went to the learning loop, the frontend console, and
+the rename. [TODO: adjust timeline details to taste.]
 
 The build ran backend-first, and the key decisions were mostly about what
 *not* to build:
@@ -72,8 +75,15 @@ gets creative with markdown fences.
 system prompt's doctrine rules, not infrastructure. The difference between
 "here are your tasks organized nicely" and an order with teeth — a real
 mission, real drops, a warning that the week is overcommitted — is entirely
-in those rules. [TODO: one concrete before/after example of a prompt rule you
-tuned, e.g. what the output looked like before rule 5 vs. after.]
+in those rules. Concrete example: my first evening debrief said I'd finished
+one task and gotten "half a draft" of another — and the after-action model
+cheerfully marked all five scheduled tasks done, which would have silently
+emptied the task pool. The fix was a prompt rule, not code: a task may only be
+closed on explicit evidence ("shipped the memo"), being scheduled is not
+evidence, partial progress stays open, and when in doubt, omit — a wrongly
+closed task disappears from every future plan. Re-ran the same debrief: one
+task closed, four left open. That one rule is the difference between a
+learning loop and a data-corruption loop.
 
 **The learning loop earns the word "agent."** The debrief analysis
 distinguishes one-off events from patterns, and only patterns supported by at
@@ -86,9 +96,14 @@ document is genuinely uncomfortable in the way good feedback is.
 a shared-secret header guards a single-principal tool. Every one of those
 features was a schedule risk with zero payoff for a weekend challenge.
 
-Challenges: [TODO: be honest — the 2–3 real snags. Candidates: JSON-mode
-discipline with Nova, SES identity verification ordering, EventBridge
-Scheduler timezone cron, DynamoDB Decimal serialization.]
+The real snags, honestly: **DynamoDB rejected the model's JSON on the very
+first call** — Nova returns `effort_hours: 1.5` and boto3 will not accept a
+Python float, so every write path now runs a recursive float-to-Decimal
+conversion. **The triage model resolved relative dates wrong** ("by friday"
+landed on the wrong week) until the prompt included the weekday alongside the
+date — models are surprisingly bad at knowing what day of the week a date is.
+And the biggest one was conceptual, not technical: I shipped a doctrinally
+wrong name and caught it in my own after-action review (see above).
 
 ## AWS Services Used / Architecture Overview
 
@@ -138,11 +153,14 @@ scheduled event a day, one email a day.
 
 ## Link to App & Repo
 
-- **Repo:** [TODO: public GitHub URL]
-- **Live app:** [TODO: Amplify URL — or state "personal single-user tool; see
-  the 60-second walkthrough below" and embed the video]
-- [TODO: 3–4 screenshots: the game plan view with a real plan, the morning email,
-  the debrief's "what the agent learned about you" panel, DynamoDB items]
+- **Repo:** https://github.com/AltivumInc-Admin/gameplan-os (public — code,
+  prompts, SAM template, and deployment guide)
+- **Live app:** https://main.dpg1b347fl82l.amplifyapp.com — deployed on
+  Amplify Hosting with CI/CD from the repo. It is a single-principal personal
+  tool behind an access key, so the screenshots below show the working loop.
+- [TODO: 3–4 screenshots: the game plan view with a real plan, the morning
+  email, the debrief's "what the agent learned about you" panel, DynamoDB
+  items]
 
 ---
 
