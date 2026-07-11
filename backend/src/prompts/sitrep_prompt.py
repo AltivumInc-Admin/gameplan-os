@@ -78,17 +78,20 @@ SCHEMA = {
 
 def build_user_prompt(*, today: str, weekday: str, local_now: str,
                       open_tasks: list[dict], preferences: list[dict],
-                      recent_debriefs: list[dict], yesterday_sitrep: dict | None) -> str:
+                      recent_debriefs: list[dict], prior_sitrep: dict | None,
+                      prior_date: str | None) -> str:
     prefs_text = "\n".join(f"- {p['text']}" for p in preferences) or "- (none learned yet)"
     debrief_text = json.dumps(
         [{"date": d.get("date"), "answers": d.get("answers"),
           "analysis_summary": (d.get("analysis") or {}).get("summary")}
          for d in recent_debriefs], default=str) or "[]"
-    yesterday_mission = "(no prior plan on record)"
-    if yesterday_sitrep:
-        yesterday_mission = json.dumps({
-            "mission": yesterday_sitrep.get("body", {}).get("mission"),
-            "p1": yesterday_sitrep.get("body", {}).get("execution", {}).get("priorities", {}).get("p1"),
+    prior_label = "MOST RECENT PLAN"
+    prior_mission = "(no prior plan on record)"
+    if prior_sitrep:
+        prior_label = f"MOST RECENT PLAN ({prior_date})"
+        prior_mission = json.dumps({
+            "mission": prior_sitrep.get("body", {}).get("mission"),
+            "p1": prior_sitrep.get("body", {}).get("execution", {}).get("priorities", {}).get("p1"),
         }, default=str)
 
     return f"""Produce today's game plan.
@@ -105,8 +108,9 @@ RECENT EVENING DEBRIEFS (most recent first — use these to calibrate: what
 slips, what the principal underestimates, recurring friction):
 {debrief_text}
 
-YESTERDAY'S MISSION AND P1s (address carryover explicitly in Situation):
-{yesterday_mission}
+{prior_label} — its mission and P1s; address carryover explicitly in
+Situation, noting the gap if it is not from yesterday:
+{prior_mission}
 
 OUTPUT: a single JSON object with exactly this schema:
 {json.dumps(SCHEMA, indent=2)}"""

@@ -1,10 +1,22 @@
 import { useEffect, useState } from 'react'
-import { getKey, setKey } from './api'
+import { api, getKey, setKey } from './api'
 import SitrepView from './components/SitrepView'
 import TasksView from './components/TasksView'
 import DebriefView from './components/DebriefView'
 
 type Tab = 'brief' | 'tasks' | 'debrief'
+
+const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone
+
+function Brand() {
+  return (
+    <div className="brand">
+      <span className="brand-mark" aria-hidden="true" />
+      <span className="brand-name">GAME PLAN OS</span>
+      <span className="brand-sub">your daily game plan</span>
+    </div>
+  )
+}
 
 function Clock() {
   const [now, setNow] = useState(new Date())
@@ -15,28 +27,42 @@ function Clock() {
   const hh = String(now.getHours()).padStart(2, '0')
   const mm = String(now.getMinutes()).padStart(2, '0')
   const ss = String(now.getSeconds()).padStart(2, '0')
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
   return (
     <span className="clock" title="Your local time">
-      {hh}:{mm}:{ss} {tz}
+      {hh}:{mm}:{ss} {TZ}
     </span>
   )
 }
 
 function Gate({ onEnter }: { onEnter: () => void }) {
   const [value, setValue] = useState('')
-  const submit = () => {
-    if (!value.trim()) return
-    setKey(value.trim())
-    onEnter()
+  const [checking, setChecking] = useState(false)
+  const [error, setError] = useState('')
+
+  const submit = async () => {
+    const key = value.trim()
+    if (!key || checking) return
+    setChecking(true)
+    setError('')
+    setKey(key)
+    try {
+      // Probe a cheap authenticated endpoint so a wrong key fails here,
+      // at the gate, instead of as cryptic errors inside every view.
+      await api.tasks('open')
+      onEnter()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setChecking(false)
+    }
   }
+
   return (
     <div className="gate-wrap">
+      <div className="radar" aria-hidden="true" />
       <div className="gate">
-        <div className="brand rise" style={{ ['--i' as string]: 0 }}>
-          <span className="brand-mark" aria-hidden="true" />
-          <span className="brand-name">GAME PLAN OS</span>
-          <span className="brand-sub">your daily game plan</span>
+        <div className="rise" style={{ ['--i' as string]: 0 }}>
+          <Brand />
         </div>
         <h1 className="rise" style={{ ['--i' as string]: 1 }}>
           A one-page game plan for the day, written for you every morning.
@@ -60,13 +86,19 @@ function Gate({ onEnter }: { onEnter: () => void }) {
             value={value}
             placeholder="access key"
             aria-label="Access key"
+            autoFocus
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && submit()}
           />
-          <button className="primary" onClick={submit}>
-            Enter
+          <button className="primary" onClick={submit} disabled={checking}>
+            {checking ? 'Checking' : 'Enter'}
           </button>
         </div>
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
         <p className="key-hint rise" style={{ ['--i' as string]: 5 }}>
           This is the key you chose when deploying the backend. It is stored
           only in this browser.
@@ -76,12 +108,20 @@ function Gate({ onEnter }: { onEnter: () => void }) {
   )
 }
 
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'brief', label: 'Brief' },
+  { id: 'tasks', label: 'Tasks' },
+  { id: 'debrief', label: 'Debrief' },
+]
+
 export default function App() {
   const [tab, setTab] = useState<Tab>('brief')
   const [authed, setAuthed] = useState(Boolean(getKey()))
 
   useEffect(() => {
-    document.title = 'Game Plan OS — Your Daily Game Plan'
+    const onUnauthorized = () => setAuthed(false)
+    window.addEventListener('sitrep-unauthorized', onUnauthorized)
+    return () => window.removeEventListener('sitrep-unauthorized', onUnauthorized)
   }, [])
 
   if (!authed) return <Gate onEnter={() => setAuthed(true)} />
@@ -94,30 +134,34 @@ export default function App() {
   return (
     <div className="shell">
       <header className="top">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true" />
-          <span className="brand-name">GAME PLAN OS</span>
-          <span className="brand-sub">your daily game plan</span>
-        </div>
+        <Brand />
         <div className="top-right">
           <Clock />
           <nav className="tabs" aria-label="Views">
-            <button className={tab === 'brief' ? 'active' : ''} onClick={() => setTab('brief')}>
-              Brief
-            </button>
-            <button className={tab === 'tasks' ? 'active' : ''} onClick={() => setTab('tasks')}>
-              Tasks
-            </button>
-            <button className={tab === 'debrief' ? 'active' : ''} onClick={() => setTab('debrief')}>
-              Debrief
-            </button>
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                aria-current={tab === t.id ? 'true' : undefined}
+                onClick={() => setTab(t.id)}
+              >
+                {t.label}
+              </button>
+            ))}
           </nav>
         </div>
       </header>
       <main>
-        {tab === 'brief' && <SitrepView />}
-        {tab === 'tasks' && <TasksView />}
-        {tab === 'debrief' && <DebriefView />}
+        {/* Views stay mounted so in-progress work (a half-typed debrief,
+            a drafted dump) survives tab switches. */}
+        <div className={tab === 'brief' ? 'view view-active' : 'view'} hidden={tab !== 'brief'}>
+          <SitrepView active={tab === 'brief'} onOpenDebrief={() => setTab('debrief')} />
+        </div>
+        <div className={tab === 'tasks' ? 'view view-active' : 'view'} hidden={tab !== 'tasks'}>
+          <TasksView active={tab === 'tasks'} />
+        </div>
+        <div className={tab === 'debrief' ? 'view view-active' : 'view'} hidden={tab !== 'debrief'}>
+          <DebriefView active={tab === 'debrief'} />
+        </div>
       </main>
       <footer className="bottom">
         <span>

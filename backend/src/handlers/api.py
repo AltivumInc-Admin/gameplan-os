@@ -2,40 +2,44 @@
 
 Auth: shared secret in x-sitrep-key header (personal tool; deliberately no
 Cognito for the weekend — see docs/DEPLOYMENT.md for the reasoning).
+CORS is owned entirely by the HTTP API's CorsConfiguration in template.yaml;
+this handler deliberately sets no CORS headers.
 
 Routes:
   POST  /dump               {text}            -> triage brain dump into tasks
   GET   /tasks?status=open                    -> list tasks
   POST  /tasks              {title,...}       -> create one task directly
   PATCH /tasks/{id}         {status,...}      -> update task
-  POST  /sitrep/generate                      -> generate today's order on demand
-  GET   /sitrep/latest                        -> most recent order
-  GET   /sitrep/{date}                        -> order for a date (YYYY-MM-DD)
+  POST  /sitrep/generate                      -> generate today's plan on demand
+  GET   /sitrep/latest                        -> most recent plan
+  GET   /sitrep/{date}                        -> plan for a date (YYYY-MM-DD)
   POST  /debrief            {answers:{q1,q2,q3}} -> run evening after-action loop
   GET   /health                               -> unauthenticated liveness check
 """
 import decimal
+import hmac
 import json
 import traceback
 
+from botocore.exceptions import ClientError
+
 from common import config, db, service
+
+MAX_DUMP_CHARS = 8000
 
 
 class _Encoder(json.JSONEncoder):
     def default(self, o):
         if isinstance(o, decimal.Decimal):
             return float(o) if o % 1 else int(o)
-        return super().default(o)
+        return str(o)
 
 
 def _resp(status: int, body) -> dict:
     return {
         "statusCode": status,
-        "headers": {"content-type": "application/json",
-                    "access-control-allow-origin": "*",
-                    "access-control-allow-headers": "content-type,x-sitrep-key",
-                    "access-control-allow-methods": "GET,POST,PATCH,OPTIONS"},
-        "body": json.dumps(body, cls=_Encoder, default=str),
+        "headers": {"content-type": "application/json"},
+        "body": json.dumps(body, cls=_Encoder),
     }
 
 
@@ -43,13 +47,16 @@ def handler(event, _context):
     http = event.get("requestContext", {}).get("http", {})
     method = http.get("method", "")
     path = event.get("rawPath", "").rstrip("/")
-    if method == "OPTIONS":
-        return _resp(200, {})
     if path == "/health":
         return _resp(200, {"ok": True})
 
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
-    if headers.get("x-sitrep-key") != config.API_KEY:
+    # Empty API_KEY means misconfiguration; deny everything rather than
+    # letting empty == empty pass. Compare bytes so a non-ASCII pasted key
+    # degrades to a 401, not a TypeError 500.
+    supplied = headers.get("x-sitrep-key", "").encode("utf-8", "surrogatepass")
+    if not config.API_KEY or not hmac.compare_digest(
+            supplied, config.API_KEY.encode("utf-8")):
         return _resp(401, {"error": "missing or invalid x-sitrep-key"})
 
     body = {}
@@ -58,6 +65,8 @@ def handler(event, _context):
             body = json.loads(event["body"])
         except json.JSONDecodeError:
             return _resp(400, {"error": "invalid JSON body"})
+        if not isinstance(body, dict):
+            return _resp(400, {"error": "body must be a JSON object"})
     qs = event.get("queryStringParameters") or {}
 
     try:
@@ -66,6 +75,8 @@ def handler(event, _context):
             text = (body.get("text") or "").strip()
             if not text:
                 return _resp(400, {"error": "text is required"})
+            if len(text) > MAX_DUMP_CHARS:
+                return _resp(400, {"error": f"dump is over {MAX_DUMP_CHARS} characters; split it into smaller dumps"})
             return _resp(200, {"created": service.triage_dump(text)})
 
         if method == "GET" and path == "/tasks":
@@ -77,7 +88,14 @@ def handler(event, _context):
             return _resp(200, {"task": db.put_task(body)})
 
         if method == "PATCH" and path.startswith("/tasks/"):
-            db.update_task(path.split("/")[-1], body)
+            try:
+                db.update_task(path.split("/")[-1], body)
+            except ValueError as exc:
+                return _resp(400, {"error": str(exc)})
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                    return _resp(404, {"error": "unknown task id"})
+                raise
             return _resp(200, {"ok": True})
 
         if method == "POST" and path == "/sitrep/generate":

@@ -19,6 +19,14 @@ async function req(method: string, path: string, body?: unknown) {
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
+  if (res.status === 401) {
+    // The stored key is no longer valid (e.g. rotated on redeploy):
+    // drop it and let the app fall back to the gate instead of scattering
+    // raw 401 strings across every view.
+    setKey('')
+    window.dispatchEvent(new Event('sitrep-unauthorized'))
+    throw new Error('Access key not accepted. Enter it again.')
+  }
   if (!res.ok) {
     const text = await res.text()
     throw new Error(`${res.status}: ${text}`)

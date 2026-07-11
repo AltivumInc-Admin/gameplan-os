@@ -19,6 +19,8 @@ and extract durable lessons. Rules:
    "Estimates on Elo tasks run 2x long; pad them".
 4. confidence is "high" only when supported by at least two independent
    signals across debriefs. Low-confidence hunches stay out of the profile.
+   Never re-propose a preference that is already in the ALREADY-LEARNED list,
+   even reworded; propose only lessons not yet covered there.
 5. task_updates: include a task ONLY when the answers give explicit evidence it
    was finished ("shipped the memo" -> done) or consciously abandoned ("decided
    to kill the podcast" -> dropped). Being scheduled in a time block is NOT
@@ -28,8 +30,9 @@ and extract durable lessons. Rules:
 Respond with ONLY valid JSON."""
 
 
-def build_user_prompt(*, today: str, sitrep_body: dict, answers: dict,
-                      recent_debriefs: list[dict]) -> str:
+def build_user_prompt(*, today: str, sitrep_date: str, sitrep_body: dict,
+                      answers: dict, recent_debriefs: list[dict],
+                      known_preferences: list[str]) -> str:
     schema = {
         "summary": "2-3 sentence honest after-action summary",
         "mission_accomplished": True,
@@ -46,9 +49,11 @@ def build_user_prompt(*, today: str, sitrep_body: dict, answers: dict,
     history = json.dumps(
         [{"date": d.get("date"), "answers": d.get("answers")} for d in recent_debriefs],
         default=str)
+    prefs_text = "\n".join(f"- {p}" for p in known_preferences) or "- (none yet)"
     return f"""DATE: {today}
 
-THIS MORNING'S SITREP (the plan):
+THE PLAN (dated {sitrep_date} — note in your analysis if plan and reality
+diverge in date):
 {json.dumps(sitrep_body, default=str)}
 
 PRINCIPAL'S DEBRIEF ANSWERS (the reality):
@@ -56,6 +61,9 @@ PRINCIPAL'S DEBRIEF ANSWERS (the reality):
 
 PRIOR DEBRIEFS (for pattern detection):
 {history}
+
+ALREADY-LEARNED PREFERENCES (do NOT re-propose these, even reworded):
+{prefs_text}
 
 OUTPUT: a single JSON object with exactly this schema:
 {json.dumps(schema, indent=2)}"""

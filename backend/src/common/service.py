@@ -1,5 +1,6 @@
 """Core orchestration: generate the game plan, triage dumps, process debriefs, email."""
 import datetime
+import json
 from zoneinfo import ZoneInfo
 
 import boto3
@@ -9,32 +10,92 @@ from prompts import debrief_prompt, sitrep_prompt, triage_prompt
 
 _ses = boto3.client("ses")
 
+PLAN_SECTIONS = ("situation", "mission", "execution", "sustainment", "command_signal")
+
 
 def _local_now() -> datetime.datetime:
     return datetime.datetime.now(ZoneInfo(config.LOCAL_TZ))
 
 
+def _clamp(value, lo, hi, default):
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, v))
+
+
+def _normalize_task(raw) -> dict | None:
+    """Whitelist and sanity-check one model-emitted task; None if unusable."""
+    if not isinstance(raw, dict):
+        return None
+    title = raw.get("title")
+    if not isinstance(title, str) or not title.strip():
+        return None
+    tr = raw.get("triage")
+    triage_raw: dict = tr if isinstance(tr, dict) else {}
+    return {
+        "title": title.strip(),
+        "notes": raw.get("notes") if isinstance(raw.get("notes"), str) else "",
+        "project": raw.get("project") if isinstance(raw.get("project"), str) else None,
+        "due": raw.get("due") if isinstance(raw.get("due"), str) else None,
+        "triage": {
+            "urgency": int(_clamp(triage_raw.get("urgency"), 1, 5, 3)),
+            "impact": int(_clamp(triage_raw.get("impact"), 1, 5, 3)),
+            "effort_hours": _clamp(triage_raw.get("effort_hours"), 0.25, 8, 1.0),
+            "rationale": triage_raw.get("rationale") if isinstance(triage_raw.get("rationale"), str) else "",
+        },
+    }
+
+
 def triage_dump(dump: str) -> list[dict]:
     """Brain dump -> discrete triaged tasks, persisted."""
     now = _local_now()
-    known_projects = sorted({t.get("project") for t in db.list_tasks("open") if t.get("project")})
+    # All tasks (not just open) so finished projects keep anchoring inference.
+    known_projects = sorted({str(t["project"]) for t in db.list_tasks() if t.get("project")})
     result = bedrock.converse_json(
         config.NOVA_LITE_MODEL_ID,
         triage_prompt.SYSTEM,
         triage_prompt.build_user_prompt(
             dump, f"{now.date().isoformat()} ({now.strftime('%A')})", known_projects),
         max_tokens=2000, temperature=0.2)
-    created = []
+    created, skipped = [], 0
     for t in result.get("tasks", []):
-        created.append(db.put_task(t))
+        task = _normalize_task(t)
+        if task is None:
+            skipped += 1
+            continue
+        created.append(db.put_task(task))
+    if skipped:
+        print(json.dumps({"event": "triage_skipped_malformed", "count": skipped}))
     return created
 
 
-def generate_sitrep(for_date: str | None = None) -> dict:
-    """Generate (or regenerate) the operations order for a date."""
-    now = _local_now()
-    today = for_date or now.date().isoformat()
+def _prior_plan() -> tuple[dict | None, str | None]:
+    """Most recent plan strictly before today, with its date."""
+    today = _local_now().date().isoformat()
     yesterday = (datetime.date.fromisoformat(today) - datetime.timedelta(days=1)).isoformat()
+    prior = db.get_sitrep(yesterday)
+    if prior is None:
+        latest = db.latest_sitrep()
+        if latest and latest.get("date", "") < today:
+            prior = latest
+    return prior, (prior or {}).get("date")
+
+
+def _validate_plan(body: dict) -> None:
+    missing = [k for k in PLAN_SECTIONS if not isinstance(body.get(k), dict)]
+    if missing:
+        raise ValueError(f"model returned a plan missing sections: {missing}")
+    if not (body.get("mission", {}).get("statement") or "").strip():
+        raise ValueError("model returned a plan with an empty mission statement")
+
+
+def generate_sitrep() -> dict:
+    """Generate (or regenerate) today's game plan."""
+    now = _local_now()
+    today = now.date().isoformat()
+    prior, prior_date = _prior_plan()
 
     body = bedrock.converse_json(
         config.NOVA_PRO_MODEL_ID,
@@ -44,11 +105,17 @@ def generate_sitrep(for_date: str | None = None) -> dict:
             weekday=now.strftime("%A"),
             local_now=now.strftime("%H:%M"),
             open_tasks=db.list_tasks("open"),
-            preferences=[p for p in db.get_preferences()],
+            preferences=db.get_preferences(),
             recent_debriefs=db.recent_debriefs(5),
-            yesterday_sitrep=db.get_sitrep(yesterday),
+            prior_sitrep=prior,
+            prior_date=prior_date,
         ),
         max_tokens=3500, temperature=0.4)
+    _validate_plan(body)
+    # Normalize the "no warning" sentinel once, at the boundary.
+    warn = body.get("command_signal", {}).get("overcommitment_warning")
+    if not warn or (isinstance(warn, str) and warn.strip().lower() == "null"):
+        body["command_signal"]["overcommitment_warning"] = None
     body["date"] = today
     db.put_sitrep(today, body)
     return body
@@ -58,84 +125,119 @@ def process_debrief(answers: dict) -> dict:
     """Evening loop: analyze answers, update tasks, persist learned preferences."""
     today = _local_now().date().isoformat()
     sitrep = db.get_sitrep(today) or db.latest_sitrep() or {}
+    sitrep_date = sitrep.get("date", "unknown")
+    if sitrep_date != today:
+        print(json.dumps({"event": "debrief_stale_plan", "plan_date": sitrep_date}))
     analysis = bedrock.converse_json(
         config.NOVA_PRO_MODEL_ID,
         debrief_prompt.SYSTEM,
         debrief_prompt.build_user_prompt(
             today=today,
+            sitrep_date=sitrep_date,
             sitrep_body=sitrep.get("body", {}),
             answers=answers,
             recent_debriefs=db.recent_debriefs(5),
+            known_preferences=[p.get("text", "") for p in db.get_preferences()],
         ),
         max_tokens=2500, temperature=0.3)
 
+    # Persist the raw analysis first: if applying it fails, the record survives.
+    db.put_debrief(today, answers, analysis)
+
+    valid_ids = {t["id"] for t in db.list_tasks()}
+    applied, skipped = [], []
     for upd in analysis.get("task_updates", []):
-        if upd.get("task_id") and upd.get("status") in ("done", "dropped"):
-            db.update_task(upd["task_id"], {"status": upd["status"]})
+        task_id, status = upd.get("task_id"), upd.get("status")
+        if status not in ("done", "dropped"):
+            continue
+        if task_id not in valid_ids:
+            skipped.append(task_id)
+            continue
+        db.update_task(task_id, {"status": status})
+        applied.append({"task_id": task_id, "status": status})
 
     high_conf = [
         {"text": p["text"], "source": p.get("evidence", ""), "confidence": "high"}
         for p in analysis.get("candidate_preferences", [])
-        if p.get("confidence") == "high"
+        if p.get("confidence") == "high" and p.get("text")
     ]
     if high_conf:
         db.append_preferences(high_conf)
 
-    db.put_debrief(today, answers, analysis)
+    print(json.dumps({"event": "debrief_applied", "plan_date": sitrep_date,
+                      "task_updates": applied, "skipped_unknown_ids": skipped,
+                      "prefs_added": [p["text"] for p in high_conf]}))
     return analysis
 
 
 # ---------- email rendering ----------
 
 def render_email_text(body: dict) -> str:
-    """Plaintext rendering of the order. Terse by design."""
-    ex = body.get("execution", {})
-    cs = body.get("command_signal", {})
+    """Plaintext rendering of the plan. Terse by design; omits empty sections."""
+    ex = body.get("execution", {}) or {}
+    cs = body.get("command_signal", {}) or {}
+    sus = body.get("sustainment", {}) or {}
+    sit = body.get("situation", {}) or {}
     lines = [
-        f"GAME PLAN {body.get('date')}",
+        f"GAME PLAN {body.get('date', '')}".rstrip(),
         "(in the spirit of a five-paragraph operations order)",
         "",
         "1. SITUATION",
-        body.get("situation", {}).get("overview", ""),
-        *[f"  - {c}" for c in body.get("situation", {}).get("changes_since_yesterday", [])],
+        sit.get("overview", ""),
+        *[f"  - {c}" for c in sit.get("changes_since_yesterday") or []],
         "",
         "2. MISSION",
         body.get("mission", {}).get("statement", ""),
-        f"   Why: {body.get('mission', {}).get('why_decisive', '')}",
-        "",
-        "3. EXECUTION",
-        *[f"  {b.get('start')}-{b.get('end')}  {b.get('label')} — {b.get('intent')}"
-          for b in ex.get("time_blocks", [])],
-        "",
-        "  P1: " + "; ".join(p.get("title", "") for p in ex.get("priorities", {}).get("p1", [])),
-        "  P2: " + "; ".join(p.get("title", "") for p in ex.get("priorities", {}).get("p2", [])),
-        "  P3: " + "; ".join(p.get("title", "") for p in ex.get("priorities", {}).get("p3", [])),
-        "  DROPPED: " + "; ".join(f"{d.get('title')} ({d.get('reason')})"
-                                   for d in ex.get("deliberately_dropped", [])),
-        "",
-        "4. SUSTAINMENT",
-        body.get("sustainment", {}).get("energy_plan", ""),
-        *[f"  - {b}" for b in body.get("sustainment", {}).get("breaks", [])],
-        "",
-        "5. COMMAND & SIGNAL",
-        *[f"  DP: {d}" for d in cs.get("decision_points", [])],
-        *[f"  BLOCKER: {b}" for b in cs.get("blockers_to_escalate", [])],
-        *[f"  SAY NO TO: {s}" for s in cs.get("say_no_to", [])],
     ]
+    why = body.get("mission", {}).get("why_decisive")
+    if why:
+        lines.append(f"   Why: {why}")
+    lines += ["", "3. EXECUTION"]
+    for b in ex.get("time_blocks") or []:
+        if not isinstance(b, dict):
+            continue
+        lines.append(f"  {b.get('start', '?')}-{b.get('end', '?')}  "
+                     f"{b.get('label', '')} — {b.get('intent', '')}")
+    lines.append("")
+    prios = ex.get("priorities") or {}
+    for tier in ("p1", "p2", "p3"):
+        entries = prios.get(tier) or []
+        if entries:
+            lines.append(f"  {tier.upper()}: " + "; ".join(
+                p.get("title", "") for p in entries if isinstance(p, dict)))
+    dropped = ex.get("deliberately_dropped") or []
+    if dropped:
+        lines.append("  DROPPED: " + "; ".join(
+            f"{d.get('title', '')} ({d.get('reason', '')})"
+            for d in dropped if isinstance(d, dict)))
+    lines += ["", "4. SUSTAINMENT"]
+    if sus.get("energy_plan"):
+        lines.append(sus["energy_plan"])
+    lines += [f"  - {b}" for b in sus.get("breaks") or []]
+    lines += ["", "5. COMMAND & SIGNAL"]
+    lines += [f"  DECISION: {d}" for d in cs.get("decision_points") or []]
+    lines += [f"  BLOCKER: {b}" for b in cs.get("blockers_to_escalate") or []]
+    lines += [f"  DECLINE: {s}" for s in cs.get("say_no_to") or []]
     warning = cs.get("overcommitment_warning")
-    if warning and str(warning).lower() != "null":
+    if warning and str(warning).strip().lower() != "null":
         lines += ["", f"  !! OVERCOMMITMENT: {warning}"]
-    lines += ["", "-- Evening debrief questions --",
-              *[f"  {i+1}. {q}" for i, q in enumerate(body.get("debrief_questions", []))]]
+    questions = body.get("debrief_questions") or []
+    if questions:
+        lines += ["", "-- Evening debrief questions --",
+                  *[f"  {i + 1}. {q}" for i, q in enumerate(questions)]]
     return "\n".join(lines)
 
 
 def send_sitrep_email(body: dict) -> None:
-    _ses.send_email(
+    mission = " ".join((body.get("mission", {}).get("statement") or "").split())
+    subject = f"Game Plan {body.get('date', '')} — {mission}"[:120]
+    resp = _ses.send_email(
         Source=config.NOTIFY_EMAIL,
         Destination={"ToAddresses": [config.NOTIFY_EMAIL]},
         Message={
-            "Subject": {"Data": f"Game Plan {body.get('date')} — {body.get('mission', {}).get('statement', '')[:80]}"},
+            "Subject": {"Data": subject},
             "Body": {"Text": {"Data": render_email_text(body)}},
         },
     )
+    print(json.dumps({"event": "sitrep_email_sent", "date": body.get("date"),
+                      "subject": subject, "ses_message_id": resp.get("MessageId")}))

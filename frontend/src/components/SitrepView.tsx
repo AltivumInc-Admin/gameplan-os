@@ -38,53 +38,134 @@ const GENERATION_STAGES = [
 function toMinutes(t: string | undefined): number | null {
   const m = /^(\d{1,2}):(\d{2})/.exec((t ?? '').trim())
   if (!m) return null
-  const v = parseInt(m[1], 10) * 60 + parseInt(m[2], 10)
-  return v >= 0 && v < 1440 ? v : null
+  const h = parseInt(m[1], 10)
+  const min = parseInt(m[2], 10)
+  if (h > 23 || min > 59) return null
+  return h * 60 + min
 }
 
-function DayTimeline({ blocks }: { blocks: TimeBlock[] }) {
-  const parsed = blocks
-    .map((b) => ({ ...b, s: toMinutes(b.start), e: toMinutes(b.end) }))
-    .filter((b): b is TimeBlock & { s: number; e: number } => b.s !== null && b.e !== null && b.e > b.s!)
+function todayLocalISO(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+interface ParsedBlock extends TimeBlock {
+  s: number
+  e: number
+  /** Index into the RAW time_blocks array, which keys hotIdx and blockRefs. */
+  idx: number
+}
+
+function DayTimeline({
+  blocks,
+  isToday,
+  busy,
+  hotIdx,
+  onHot,
+  onJump,
+}: {
+  blocks: TimeBlock[]
+  isToday: boolean
+  busy: boolean
+  hotIdx: number | null
+  onHot: (i: number | null) => void
+  onJump: (i: number) => void
+}) {
+  const [nowMin, setNowMin] = useState(() => new Date().getHours() * 60 + new Date().getMinutes())
+  useEffect(() => {
+    const t = setInterval(
+      () => setNowMin(new Date().getHours() * 60 + new Date().getMinutes()),
+      30_000,
+    )
+    return () => clearInterval(t)
+  }, [])
+
+  const parsed: ParsedBlock[] = blocks
+    .map((b, idx) => ({ ...b, idx, s: toMinutes(b.start), e: toMinutes(b.end) }))
+    .filter((b): b is ParsedBlock => b.s !== null && b.e !== null && b.e > b.s)
+    .sort((a, b) => a.s - b.s)
   if (parsed.length === 0) return null
 
   const dayStart = Math.min(6 * 60, Math.floor(Math.min(...parsed.map((b) => b.s)) / 60) * 60)
   const dayEnd = Math.max(20 * 60, Math.ceil(Math.max(...parsed.map((b) => b.e)) / 60) * 60)
   const span = dayEnd - dayStart
   const hours = span / 60
-  const scheduled = parsed.reduce((acc, b) => acc + (b.e - b.s), 0)
+
+  // Scheduled time is the union of the (possibly overlapping) blocks.
+  let scheduled = 0
+  let coveredTo = -1
+  for (const b of parsed) {
+    const from = Math.max(b.s, coveredTo)
+    if (b.e > from) {
+      scheduled += b.e - from
+      coveredTo = b.e
+    }
+  }
   const scheduledH = (scheduled / 60).toFixed(1)
 
+  // Span is clamped to >= 14h, so 4h ticks are always the right density.
   const hourLabels: { label: string; pct: number }[] = []
-  const step = hours > 12 ? 4 : 2
-  for (let m = dayStart; m <= dayEnd; m += step * 60) {
+  for (let m = dayStart; m < dayEnd; m += 4 * 60) {
     hourLabels.push({
       label: `${String(Math.floor(m / 60)).padStart(2, '0')}:00`,
       pct: ((m - dayStart) / span) * 100,
     })
   }
+  hourLabels.push({
+    label: `${String(Math.floor(dayEnd / 60)).padStart(2, '0')}:00`,
+    pct: 100,
+  })
+
+  const nowPct = isToday && nowMin >= dayStart && nowMin <= dayEnd
+    ? ((nowMin - dayStart) / span) * 100
+    : null
 
   return (
-    <div className="timeline" role="img" aria-label={`Day timeline: ${scheduledH} hours scheduled across ${parsed.length} blocks; the rest is reserve`}>
+    <div
+      className="timeline"
+      role="img"
+      aria-label={`Day timeline: ${scheduledH} hours scheduled across ${parsed.length} blocks; the rest is reserve`}
+    >
       <div className="tl-track" style={{ ['--hours' as string]: hours }}>
         {parsed.map((b, i) => (
           <div
-            key={i}
-            className="tl-block"
+            key={b.idx}
+            role="button"
+            tabIndex={0}
+            aria-label={`${b.start} to ${b.end}: ${b.label}. Jump to details.`}
+            className={`tl-block${hotIdx === b.idx ? ' hot' : ''}`}
             style={{
               ['--i' as string]: i,
               left: `${((b.s - dayStart) / span) * 100}%`,
               width: `${((b.e - b.s) / span) * 100}%`,
             }}
             title={`${b.start}-${b.end} ${b.label}: ${b.intent}`}
+            onMouseEnter={() => onHot(b.idx)}
+            onMouseLeave={() => onHot(null)}
+            onFocus={() => onHot(b.idx)}
+            onBlur={() => onHot(null)}
+            onClick={() => onJump(b.idx)}
+            onKeyDown={(e) => e.key === 'Enter' && onJump(b.idx)}
           >
             <span>{b.label}</span>
           </div>
         ))}
+        {nowPct !== null && (
+          <div className="tl-now" style={{ left: `${nowPct}%` }} title="Now">
+            <i />
+          </div>
+        )}
+        {busy && <div className="tl-scan" aria-hidden="true" />}
       </div>
       <div className="tl-hours" aria-hidden="true">
         {hourLabels.map((h) => (
-          <span key={h.label} style={{ left: `${h.pct}%` }}>
+          <span
+            key={h.label}
+            style={{
+              left: `${h.pct}%`,
+              transform: h.pct === 0 ? 'none' : h.pct === 100 ? 'translateX(-100%)' : 'translateX(-50%)',
+            }}
+          >
             {h.label}
           </span>
         ))}
@@ -97,63 +178,97 @@ function DayTimeline({ blocks }: { blocks: TimeBlock[] }) {
           <i className="chip chip-reserve" /> reserve &middot; left open on purpose, because
           days never go to plan
         </span>
+        {nowPct !== null && (
+          <span>
+            <i className="chip chip-now" /> now
+          </span>
+        )}
       </div>
     </div>
   )
 }
 
 function ParaHead({ num, title, plain }: { num: string; title: string; plain: string }) {
+  const id = `para-${num}`
   return (
     <div className="para-head">
-      <span className="para-num">{num}</span>
-      <span className="para-title">{title}</span>
+      <span className="para-num" aria-hidden="true">
+        {num}
+      </span>
+      <h3 className="para-title" id={id}>
+        {title}
+      </h3>
       <span className="para-plain">{plain}</span>
     </div>
   )
 }
 
-export default function SitrepView() {
+export default function SitrepView({
+  active,
+  onOpenDebrief,
+}: {
+  active: boolean
+  onOpenDebrief: () => void
+}) {
   const [sitrep, setSitrep] = useState<Sitrep | null>(null)
   const [generatedAt, setGeneratedAt] = useState('')
   const [loading, setLoading] = useState(false)
-  const [stage, setStage] = useState(0)
+  const [stagesReached, setStagesReached] = useState(0)
+  const [justGenerated, setJustGenerated] = useState(false)
+  const [hotIdx, setHotIdx] = useState<number | null>(null)
   const [error, setError] = useState('')
   const stageTimer = useRef<number | undefined>(undefined)
+  const blockRefs = useRef<(HTMLDivElement | null)[]>([])
 
   const load = async () => {
     try {
       const res = await api.latestSitrep()
       setSitrep(res.sitrep?.body ?? null)
       setGeneratedAt(res.sitrep?.created_at ?? '')
+      setJustGenerated(false)
     } catch (e) {
-      setError(String(e))
+      setError(String(e instanceof Error ? e.message : e))
     }
   }
 
   const generate = async () => {
     setLoading(true)
     setError('')
-    setStage(0)
+    setStagesReached(1)
     stageTimer.current = window.setInterval(
-      () => setStage((s) => Math.min(s + 1, GENERATION_STAGES.length - 1)),
+      () => setStagesReached((s) => Math.min(s + 1, GENERATION_STAGES.length)),
       7000,
     )
     try {
       const res = await api.generateSitrep()
       setSitrep(res.sitrep)
       setGeneratedAt(new Date().toISOString())
+      setJustGenerated(true)
     } catch (e) {
-      setError(String(e))
+      setError(String(e instanceof Error ? e.message : e))
     } finally {
       window.clearInterval(stageTimer.current)
       setLoading(false)
     }
   }
 
+  // Views stay mounted across tab switches; refetch on activation so the
+  // scheduled morning plan (or one generated elsewhere) is never stale here.
   useEffect(() => {
-    load()
-    return () => window.clearInterval(stageTimer.current)
-  }, [])
+    if (active && !loading) load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active])
+
+  useEffect(() => () => window.clearInterval(stageTimer.current), [])
+
+  const jumpToBlock = (i: number) => {
+    const el = blockRefs.current[i]
+    if (!el) return
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' })
+    setHotIdx(i)
+    window.setTimeout(() => setHotIdx(null), 1600)
+  }
 
   const warn = sitrep?.command_signal?.overcommitment_warning
   const hasWarn = Boolean(warn && String(warn).trim().toLowerCase() !== 'null')
@@ -163,6 +278,10 @@ export default function SitrepView() {
     p2: { label: 'P2', plain: 'then these' },
     p3: { label: 'P3', plain: 'if the day allows' },
   } as const
+  const cs = sitrep?.command_signal
+  const hasSignal = Boolean(
+    cs?.decision_points?.length || cs?.blockers_to_escalate?.length || cs?.say_no_to?.length || hasWarn,
+  )
 
   return (
     <div>
@@ -182,15 +301,25 @@ export default function SitrepView() {
       </div>
 
       {loading && (
-        <p className="status-line" role="status">
-          <span className="pulse" aria-hidden="true" />
-          {GENERATION_STAGES[stage]}&hellip;
+        <div className="genfeed" role="status" aria-label="Generating the game plan">
+          {GENERATION_STAGES.slice(0, stagesReached).map((s, i) => (
+            <p className={`genline${i === stagesReached - 1 ? ' live' : ''}`} key={s}>
+              <span className="genmark" aria-hidden="true">
+                {i === stagesReached - 1 ? '▸' : '✓'}
+              </span>
+              {s}
+            </p>
+          ))}
+        </div>
+      )}
+      {error && (
+        <p className="error" role="alert">
+          {error}
         </p>
       )}
-      {error && <p className="error">{error}</p>}
 
       {!sitrep && !loading && (
-        <div className="explainer rise">
+        <div className="explainer">
           <span className="kicker">how this works</span>
           <p>
             <strong>1.</strong> Write everything on your mind into the Tasks tab.
@@ -210,34 +339,60 @@ export default function SitrepView() {
       )}
 
       {sitrep && (
-        <>
-          {sitrep.execution?.time_blocks && sitrep.execution.time_blocks.length > 0 && (
-            <DayTimeline blocks={sitrep.execution.time_blocks} />
+        <div className={justGenerated ? 'plan plan-reveal' : 'plan'}>
+          {!!sitrep.execution?.time_blocks?.length && (
+            <DayTimeline
+              blocks={sitrep.execution.time_blocks}
+              isToday={sitrep.date === todayLocalISO()}
+              busy={loading}
+              hotIdx={hotIdx}
+              onHot={setHotIdx}
+              onJump={jumpToBlock}
+            />
           )}
 
-          <section className="para rise" style={{ ['--i' as string]: 1 }}>
-            <ParaHead num="1" title="Situation" plain="where things stand" />
-            <p>{sitrep.situation?.overview}</p>
-            {!!sitrep.situation?.changes_since_yesterday?.length && (
-              <ul>
-                {sitrep.situation.changes_since_yesterday.map((c, i) => (
-                  <li key={i}>{c}</li>
-                ))}
-              </ul>
-            )}
-          </section>
+          {hasWarn && (
+            <div className="warn-banner" role="alert">
+              <span className="kicker">overcommitment warning</span>
+              {warn}
+            </div>
+          )}
 
-          <section className="para rise" style={{ ['--i' as string]: 2 }}>
-            <ParaHead num="2" title="Mission" plain="the one thing that matters most today" />
-            <p className="mission-statement">{sitrep.mission?.statement}</p>
-            <p className="mission-why">{sitrep.mission?.why_decisive}</p>
-          </section>
+          {!!sitrep.situation?.overview && (
+            <section className="para" style={{ ['--i' as string]: 1 }} aria-labelledby="para-1">
+              <ParaHead num="1" title="Situation" plain="where things stand" />
+              <p>{sitrep.situation.overview}</p>
+              {!!sitrep.situation.changes_since_yesterday?.length && (
+                <ul>
+                  {sitrep.situation.changes_since_yesterday.map((c, i) => (
+                    <li key={i}>{c}</li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
 
-          <section className="para rise" style={{ ['--i' as string]: 3 }}>
+          {!!sitrep.mission?.statement && (
+            <section className="para" style={{ ['--i' as string]: 2 }} aria-labelledby="para-2">
+              <ParaHead num="2" title="Mission" plain="the one thing that matters most today" />
+              <p className="mission-statement">{sitrep.mission.statement}</p>
+              <p className="mission-why">{sitrep.mission.why_decisive}</p>
+            </section>
+          )}
+
+          <section className="para" style={{ ['--i' as string]: 3 }} aria-labelledby="para-3">
             <ParaHead num="3" title="Execution" plain="the plan: time blocks, priorities, deliberate cuts" />
             <div className="blocks">
               {sitrep.execution?.time_blocks?.map((b, i) => (
-                <div className="block" key={i}>
+                <div
+                  className={`block${hotIdx === i ? ' hot' : ''}`}
+                  key={i}
+                  ref={(el) => {
+                    blockRefs.current[i] = el
+                  }}
+                  onMouseEnter={() => setHotIdx(i)}
+                  onMouseLeave={() => setHotIdx(null)}
+                >
                   <span className="when">
                     {b.start}&ndash;{b.end}
                   </span>
@@ -281,53 +436,51 @@ export default function SitrepView() {
             )}
           </section>
 
-          <section className="para rise" style={{ ['--i' as string]: 4 }}>
-            <ParaHead num="4" title="Sustainment" plain="pacing: energy and breaks" />
-            <p>{sitrep.sustainment?.energy_plan}</p>
-            {!!sitrep.sustainment?.breaks?.length && (
-              <ul>
-                {sitrep.sustainment.breaks.map((b, i) => (
-                  <li key={i}>{b}</li>
-                ))}
-              </ul>
-            )}
-          </section>
+          {!!sitrep.sustainment?.energy_plan && (
+            <section className="para" style={{ ['--i' as string]: 4 }} aria-labelledby="para-4">
+              <ParaHead num="4" title="Sustainment" plain="pacing: energy and breaks" />
+              <p>{sitrep.sustainment.energy_plan}</p>
+              {!!sitrep.sustainment.breaks?.length && (
+                <ul>
+                  {sitrep.sustainment.breaks.map((b, i) => (
+                    <li key={i}>{b}</li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
 
-          <section className="para rise" style={{ ['--i' as string]: 5 }}>
-            <ParaHead
-              num="5"
-              title="Command &amp; Signal"
-              plain="decisions to watch for, blockers to raise, requests to decline"
-            />
-            {sitrep.command_signal?.decision_points?.map((d, i) => (
-              <div className="signal-row" key={`dp${i}`}>
-                <span className="tag p3">decision</span>
-                <span>{d}</span>
-              </div>
-            ))}
-            {sitrep.command_signal?.blockers_to_escalate?.map((b, i) => (
-              <div className="signal-row" key={`bl${i}`}>
-                <span className="tag warn">blocker</span>
-                <span>{b}</span>
-              </div>
-            ))}
-            {sitrep.command_signal?.say_no_to?.map((s, i) => (
-              <div className="signal-row" key={`no${i}`}>
-                <span className="tag drop">decline</span>
-                <span>{s}</span>
-              </div>
-            ))}
-            {hasWarn && (
-              <div className="warn-banner">
-                <span className="kicker">overcommitment warning</span>
-                {warn}
-              </div>
-            )}
-          </section>
+          {hasSignal && (
+            <section className="para" style={{ ['--i' as string]: 5 }} aria-labelledby="para-5">
+              <ParaHead
+                num="5"
+                title="Command &amp; Signal"
+                plain="decisions to watch for, blockers to raise, requests to decline"
+              />
+              {cs?.decision_points?.map((d, i) => (
+                <div className="signal-row" key={`dp${i}`}>
+                  <span className="tag p3">decision</span>
+                  <span>{d}</span>
+                </div>
+              ))}
+              {cs?.blockers_to_escalate?.map((b, i) => (
+                <div className="signal-row" key={`bl${i}`}>
+                  <span className="tag warn">blocker</span>
+                  <span>{b}</span>
+                </div>
+              ))}
+              {cs?.say_no_to?.map((s, i) => (
+                <div className="signal-row" key={`no${i}`}>
+                  <span className="tag drop">decline</span>
+                  <span>{s}</span>
+                </div>
+              ))}
+            </section>
+          )}
 
           {!!sitrep.debrief_questions?.length && (
-            <section className="para rise" style={{ ['--i' as string]: 6 }}>
-              <ParaHead num="+" title="This evening" plain="three questions waiting in the Debrief tab" />
+            <section className="para" style={{ ['--i' as string]: 6 }} aria-labelledby="para-+">
+              <ParaHead num="+" title="This evening" plain="three questions about how today actually goes" />
               <ul>
                 {sitrep.debrief_questions.map((q, i) => (
                   <li key={i} className="dim">
@@ -335,9 +488,12 @@ export default function SitrepView() {
                   </li>
                 ))}
               </ul>
+              <button className="ghost" onClick={onOpenDebrief}>
+                Open the debrief
+              </button>
             </section>
           )}
-        </>
+        </div>
       )}
     </div>
   )

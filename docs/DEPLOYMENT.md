@@ -48,6 +48,10 @@ sam deploy --guided
 
 Note the `ApiUrl` output.
 
+The stack also creates an SNS topic subscribed to NotifyEmail for the
+morning-plan failure alarm — **confirm the SNS subscription email** when it
+arrives, or alarm notifications will not be delivered.
+
 ## 4. Smoke test (5 minutes, catches 90% of problems)
 
 ```bash
@@ -79,9 +83,20 @@ aws lambda invoke --function-name $(aws cloudformation describe-stack-resources 
 
 Check your inbox for the game plan email.
 
-## 6. Frontend on Amplify Hosting
+## 6. Frontend on Amplify Hosting (Git-connected CI/CD)
 
-Fastest path (no Git integration needed):
+Primary path: connect the GitHub repo to Amplify Hosting. The repo's
+`amplify.yml` supplies all build settings (monorepo `frontend/` app root,
+Node 20, `npm ci`, `dist` artifacts) automatically. The one setting you must
+provide in Amplify is the branch environment variable `VITE_API_URL` set to
+the `ApiUrl` stack output — the build fails fast if it is missing. Every push
+to `main` then builds and deploys automatically.
+
+Also pass your Amplify domain in the `AllowedOrigins` stack parameter so CORS
+admits the deployed frontend.
+
+Fallback (no Git integration): build locally and drag `dist/` into
+Amplify console → Host web app → Deploy without Git:
 
 ```bash
 cd frontend
@@ -89,10 +104,6 @@ npm i
 echo "VITE_API_URL=<ApiUrl>" > .env.production
 npm run build
 ```
-
-Amplify console → Host web app → Deploy without Git → drag the `dist/` folder.
-Alternatively connect the GitHub repo with build command `npm run build`,
-output dir `dist`, and env var `VITE_API_URL`.
 
 Open the app, enter your ApiKey at the gate, and walk the loop:
 dump → tasks → generate → brief → debrief.

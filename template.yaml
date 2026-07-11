@@ -9,7 +9,7 @@ Description: >
 Parameters:
   NotifyEmail:
     Type: String
-    Description: SES-verified email that receives the morning SITREP (also used as sender).
+    Description: SES-verified email that receives the morning game plan (also used as sender and failure-alarm target).
   ApiKey:
     Type: String
     NoEcho: true
@@ -18,7 +18,7 @@ Parameters:
     Type: String
     Default: us.amazon.nova-pro-v1:0
     Description: >
-      Bedrock model/inference-profile ID for SITREP generation and debrief analysis.
+      Bedrock model/inference-profile ID for game plan generation and debrief analysis.
       VERIFY the current ID before deploy: aws bedrock list-inference-profiles
   NovaLiteModelId:
     Type: String
@@ -27,10 +27,14 @@ Parameters:
   SitrepHourLocal:
     Type: String
     Default: '30 5'
-    Description: 'cron minute+hour for the morning brief in LOCAL time (default 05:30).'
+    Description: 'cron minute+hour for the morning plan in LOCAL time (default 05:30).'
   TimeZone:
     Type: String
     Default: America/Chicago
+  AllowedOrigins:
+    Type: CommaDelimitedList
+    Default: 'https://main.dpg1b347fl82l.amplifyapp.com,http://localhost:5173,http://localhost:4173'
+    Description: Browser origins allowed by CORS (the Amplify app plus local dev servers).
 
 Globals:
   Function:
@@ -41,7 +45,6 @@ Globals:
       Variables:
         TABLE_NAME: !Ref SitrepTable
         NOTIFY_EMAIL: !Ref NotifyEmail
-        API_KEY: !Ref ApiKey
         NOVA_PRO_MODEL_ID: !Ref NovaProModelId
         NOVA_LITE_MODEL_ID: !Ref NovaLiteModelId
         USER_ID: primary
@@ -51,8 +54,12 @@ Resources:
 
   SitrepTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       AttributeDefinitions:
         - AttributeName: PK
           AttributeType: S
@@ -68,8 +75,7 @@ Resources:
     Type: AWS::Serverless::HttpApi
     Properties:
       CorsConfiguration:
-        AllowOrigins:
-          - '*'
+        AllowOrigins: !Ref AllowedOrigins
         AllowHeaders:
           - content-type
           - x-sitrep-key
@@ -85,6 +91,11 @@ Resources:
       Description: Game Plan OS REST API - tasks, on-demand plan generation, debrief loop.
       CodeUri: backend/src/
       Handler: handlers.api.handler
+      LoggingConfig:
+        LogGroup: !Ref ApiFunctionLogs
+      Environment:
+        Variables:
+          API_KEY: !Ref ApiKey
       Events:
         AnyRoute:
           Type: HttpApi
@@ -99,12 +110,17 @@ Resources:
             IdentityName: !Ref NotifyEmail
         - Statement:
             - Effect: Allow
-              Action:
-                - bedrock:InvokeModel
-                - bedrock:InvokeModelWithResponseStream
-                - bedrock:Converse
-                - bedrock:ConverseStream
-              Resource: '*'
+              Action: bedrock:InvokeModel
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/${NovaProModelId}'
+                - !Sub 'arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/${NovaLiteModelId}'
+                - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/amazon.nova-*'
+
+  ApiFunctionLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /gameplan-os/api
+      RetentionInDays: 30
 
   MorningBriefFunction:
     Type: AWS::Serverless::Function
@@ -113,6 +129,11 @@ Resources:
       CodeUri: backend/src/
       Handler: handlers.scheduled_sitrep.handler
       Timeout: 180
+      LoggingConfig:
+        LogGroup: !Ref MorningBriefFunctionLogs
+      EventInvokeConfig:
+        MaximumEventAgeInSeconds: 3600
+        MaximumRetryAttempts: 2
       Events:
         MorningBrief:
           Type: ScheduleV2
@@ -127,16 +148,51 @@ Resources:
             IdentityName: !Ref NotifyEmail
         - Statement:
             - Effect: Allow
-              Action:
-                - bedrock:InvokeModel
-                - bedrock:InvokeModelWithResponseStream
-                - bedrock:Converse
-                - bedrock:ConverseStream
-              Resource: '*'
+              Action: bedrock:InvokeModel
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/${NovaProModelId}'
+                - !Sub 'arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/${NovaLiteModelId}'
+                - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/amazon.nova-*'
+
+  MorningBriefFunctionLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /gameplan-os/morning-brief
+      RetentionInDays: 30
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: gameplan-os-alerts
+
+  AlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref NotifyEmail
+
+  MorningBriefErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The morning game plan failed to generate or send. Check the MorningBriefFunction logs.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref MorningBriefFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
 
 Outputs:
   ApiUrl:
-    Description: Base URL for the SITREP API (set as VITE_API_URL in the frontend).
+    Description: Base URL for the Game Plan OS API (set as VITE_API_URL in the frontend).
     Value: !Sub 'https://${SitrepHttpApi}.execute-api.${AWS::Region}.amazonaws.com'
   TableName:
     Value: !Ref SitrepTable
