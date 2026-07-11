@@ -83,6 +83,7 @@ Resources:
           - GET
           - POST
           - PATCH
+          - DELETE
           - OPTIONS
 
   ApiFunction:
