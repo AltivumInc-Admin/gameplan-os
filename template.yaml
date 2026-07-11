@@ -33,7 +33,7 @@ Parameters:
     Default: America/Chicago
   AllowedOrigins:
     Type: CommaDelimitedList
-    Default: 'https://main.dpg1b347fl82l.amplifyapp.com,http://localhost:5173,http://localhost:4173'
+    Default: 'https://gameplan.altivum.ai,https://main.dpg1b347fl82l.amplifyapp.com,http://localhost:5173,http://localhost:4173'
     Description: Browser origins allowed by CORS (the Amplify app plus local dev servers).
 
 Globals:

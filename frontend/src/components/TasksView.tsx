@@ -247,6 +247,8 @@ export default function TasksView({ active }: { active: boolean }) {
       <textarea
         rows={5}
         value={dump}
+        id="brain-dump"
+        name="brain-dump"
         aria-label="Brain dump"
         placeholder="e.g. finish the cost memo by friday, follow up with the pilot program, onboarding email still broken, book flights for the conference sometime..."
         onChange={(e) => setDump(e.target.value)}
@@ -295,6 +297,8 @@ export default function TasksView({ active }: { active: boolean }) {
         <div className="quick-add">
           <input
             value={quickTitle}
+            id="quick-add-task"
+            name="quick-add-task"
             aria-label="Add one task directly"
             placeholder="Add one task directly, no sorting - e.g. renew the domain"
             onChange={(e) => setQuickTitle(e.target.value)}
