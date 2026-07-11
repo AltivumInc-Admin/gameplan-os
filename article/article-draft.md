@@ -188,8 +188,8 @@ scheduled event a day, one email a day.
 
 - **Repo:** https://github.com/AltivumInc-Admin/gameplan-os (public — code,
   prompts, SAM template, and deployment guide)
-- **Live app:** https://main.dpg1b347fl82l.amplifyapp.com — deployed on
-  Amplify Hosting with CI/CD from the repo. The landing page itself is a
+- **Live app:** https://gameplan.altivum.ai — deployed on Amplify Hosting
+  with CI/CD from the repo, behind a custom domain. The landing page itself is a
   working demo: it renders a sample morning brief with the real console
   components, so you can hover the timeline and mark blocks done without a
   key. The console behind the access key is single-principal by design; the
