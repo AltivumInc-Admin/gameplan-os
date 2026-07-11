@@ -107,7 +107,9 @@ wrong name and caught it in my own after-action review (see above).
 
 ## AWS Services Used / Architecture Overview
 
-![Architecture diagram](TODO-upload-rendered-architecture.png)
+![Architecture diagram](architecture.png)
+<!-- rendered from architecture.mmd; upload architecture.png to Builder Center -->
+
 
 | Service | Role |
 |---|---|
@@ -131,8 +133,6 @@ Tier for a single user: pay-per-request DynamoDB, two small Lambdas, one
 scheduled event a day, one email a day.
 
 ## What I Learned
-
-[TODO: keep the 3–4 that were actually true for you; delete the rest.]
 
 - **Converse API JSON discipline.** Schema-in-prompt plus a defensive parser
   and one low-temperature retry turned out to be more reliable than I
