@@ -184,5 +184,84 @@ class RenderEmailTests(unittest.TestCase):
         self.assertIn("?-?", text)  # missing block times degrade explicitly
 
 
+class ScrubTaskIdsTests(unittest.TestCase):
+    """Hallucinated plan task_ids must degrade to null, never survive to the UI."""
+
+    def _plan(self):
+        return {
+            "execution": {
+                "time_blocks": [
+                    {"start": "09:00", "end": "10:00", "label": "a",
+                     "task_ids": ["real1", "fake9"]},
+                    {"start": "10:00", "end": "11:00", "label": "b",
+                     "task_ids": "not-a-list"},
+                ],
+                "priorities": {
+                    "p1": [{"task_id": "real1", "title": "t"}],
+                    "p2": [{"task_id": "fake9", "title": "u"}],
+                    "p3": [],
+                },
+                "deliberately_dropped": [
+                    {"task_id": "real2", "title": "d", "reason": "r"},
+                    {"task_id": None, "title": "e", "reason": "s"},
+                ],
+            },
+        }
+
+    def test_unknown_ids_nulled_known_ids_kept(self):
+        body = self._plan()
+        service._scrub_task_ids(body, {"real1", "real2"})
+        ex = body["execution"]
+        self.assertEqual(ex["time_blocks"][0]["task_ids"], ["real1"])
+        self.assertEqual(ex["time_blocks"][1]["task_ids"], [])  # junk coerced
+        self.assertEqual(ex["priorities"]["p1"][0]["task_id"], "real1")
+        self.assertIsNone(ex["priorities"]["p2"][0]["task_id"])
+        self.assertEqual(ex["deliberately_dropped"][0]["task_id"], "real2")
+        self.assertIsNone(ex["deliberately_dropped"][1]["task_id"])
+
+    def test_missing_sections_tolerated(self):
+        body = {"execution": {}}
+        service._scrub_task_ids(body, set())  # must not raise
+        self.assertEqual(body, {"execution": {}})
+
+
+class CarryBlockStatusesTests(unittest.TestCase):
+    """Replan keeps marks only for blocks already ended; the future is rebuilt."""
+
+    BLOCKS = [
+        {"start": "08:00", "end": "09:30", "label": "past"},
+        {"start": "09:30", "end": "11:00", "label": "ends-at-cutoff"},
+        {"start": "13:00", "end": "14:00", "label": "future"},
+    ]
+
+    def test_past_kept_future_dropped(self):
+        kept = service._carry_block_statuses(
+            self.BLOCKS, {"0": "done", "2": "done"}, "11:00")
+        self.assertEqual(kept, {"0": "done"})
+
+    def test_block_ending_exactly_at_cutoff_kept(self):
+        kept = service._carry_block_statuses(self.BLOCKS, {"1": "skipped"}, "11:00")
+        self.assertEqual(kept, {"1": "skipped"})
+
+    def test_junk_keys_and_empty_input(self):
+        self.assertEqual(service._carry_block_statuses(self.BLOCKS, None, "12:00"), {})
+        kept = service._carry_block_statuses(
+            self.BLOCKS, {"nope": "done", "99": "done"}, "12:00")
+        self.assertEqual(kept, {})
+
+
+class PreferenceIdTests(unittest.TestCase):
+    """Preference ids must be stable (URL-safe delete key derived from text)."""
+
+    def test_stable_and_distinct(self):
+        a1 = db.preference_id("deep work before 10am")
+        a2 = db.preference_id("deep work before 10am")
+        b = db.preference_id("no meetings on fridays")
+        self.assertEqual(a1, a2)
+        self.assertNotEqual(a1, b)
+        self.assertEqual(len(a1), 10)
+        self.assertTrue(a1.isalnum())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../api'
+import { api, type BlockStatus } from '../api'
 
 // Shape mirrors prompts/sitrep_prompt.py SCHEMA.
 interface TimeBlock {
@@ -7,16 +7,23 @@ interface TimeBlock {
   end: string
   label: string
   intent: string
+  task_ids?: (string | null)[]
 }
 
-interface Sitrep {
+interface PlanItem {
+  task_id?: string | null
+  title: string
+  reason: string
+}
+
+export interface Sitrep {
   date: string
   situation?: { overview: string; changes_since_yesterday?: string[] }
   mission?: { statement: string; why_decisive: string }
   execution?: {
     time_blocks?: TimeBlock[]
-    priorities?: Record<string, { title: string; reason: string }[]>
-    deliberately_dropped?: { title: string; reason: string }[]
+    priorities?: Record<string, PlanItem[]>
+    deliberately_dropped?: PlanItem[]
   }
   sustainment?: { energy_plan: string; breaks?: string[] }
   command_signal?: {
@@ -33,6 +40,13 @@ const GENERATION_STAGES = [
   'Weighing urgency against impact and picking one mission',
   'Laying out time blocks and deciding what to drop',
   'Writing the five sections',
+]
+
+const REPLAN_STAGES = [
+  'Reading your report and how the day has gone so far',
+  'Keeping the mission and everything already behind you',
+  'Rebuilding the rest of the day around what changed',
+  'Writing the revision',
 ]
 
 function toMinutes(t: string | undefined): number | null {
@@ -56,8 +70,9 @@ interface ParsedBlock extends TimeBlock {
   idx: number
 }
 
-function DayTimeline({
+export function DayTimeline({
   blocks,
+  blockStatus,
   isToday,
   busy,
   hotIdx,
@@ -65,6 +80,7 @@ function DayTimeline({
   onJump,
 }: {
   blocks: TimeBlock[]
+  blockStatus: BlockStatus
   isToday: boolean
   busy: boolean
   hotIdx: number | null
@@ -120,6 +136,8 @@ function DayTimeline({
     ? ((nowMin - dayStart) / span) * 100
     : null
 
+  const doneCount = parsed.filter((b) => blockStatus[String(b.idx)] === 'done').length
+
   return (
     <div
       className="timeline"
@@ -127,29 +145,32 @@ function DayTimeline({
       aria-label={`Day timeline: ${scheduledH} hours scheduled across ${parsed.length} blocks; the rest is reserve`}
     >
       <div className="tl-track" style={{ ['--hours' as string]: hours }}>
-        {parsed.map((b, i) => (
-          <div
-            key={b.idx}
-            role="button"
-            tabIndex={0}
-            aria-label={`${b.start} to ${b.end}: ${b.label}. Jump to details.`}
-            className={`tl-block${hotIdx === b.idx ? ' hot' : ''}`}
-            style={{
-              ['--i' as string]: i,
-              left: `${((b.s - dayStart) / span) * 100}%`,
-              width: `${((b.e - b.s) / span) * 100}%`,
-            }}
-            title={`${b.start}-${b.end} ${b.label}: ${b.intent}`}
-            onMouseEnter={() => onHot(b.idx)}
-            onMouseLeave={() => onHot(null)}
-            onFocus={() => onHot(b.idx)}
-            onBlur={() => onHot(null)}
-            onClick={() => onJump(b.idx)}
-            onKeyDown={(e) => e.key === 'Enter' && onJump(b.idx)}
-          >
-            <span>{b.label}</span>
-          </div>
-        ))}
+        {parsed.map((b, i) => {
+          const st = blockStatus[String(b.idx)]
+          return (
+            <div
+              key={b.idx}
+              role="button"
+              tabIndex={0}
+              aria-label={`${b.start} to ${b.end}: ${b.label}${st ? ` (${st})` : ''}. Jump to details.`}
+              className={`tl-block${hotIdx === b.idx ? ' hot' : ''}${st ? ` is-${st}` : ''}`}
+              style={{
+                ['--i' as string]: i,
+                left: `${((b.s - dayStart) / span) * 100}%`,
+                width: `${((b.e - b.s) / span) * 100}%`,
+              }}
+              title={`${b.start}-${b.end} ${b.label}: ${b.intent}`}
+              onMouseEnter={() => onHot(b.idx)}
+              onMouseLeave={() => onHot(null)}
+              onFocus={() => onHot(b.idx)}
+              onBlur={() => onHot(null)}
+              onClick={() => onJump(b.idx)}
+              onKeyDown={(e) => e.key === 'Enter' && onJump(b.idx)}
+            >
+              <span>{st === 'done' ? '✓ ' : ''}{b.label}</span>
+            </div>
+          )
+        })}
         {nowPct !== null && (
           <div className="tl-now" style={{ left: `${nowPct}%` }} title="Now">
             <i />
@@ -173,6 +194,7 @@ function DayTimeline({
       <div className="tl-legend">
         <span>
           <i className="chip chip-block" /> scheduled &middot; {scheduledH}h in {parsed.length} blocks
+          {doneCount > 0 && <> &middot; {doneCount} done</>}
         </span>
         <span>
           <i className="chip chip-reserve" /> reserve &middot; left open on purpose, because
@@ -188,7 +210,7 @@ function DayTimeline({
   )
 }
 
-function ParaHead({ num, title, plain }: { num: string; title: string; plain: string }) {
+export function ParaHead({ num, title, plain }: { num: string; title: string; plain: string }) {
   const id = `para-${num}`
   return (
     <div className="para-head">
@@ -211,19 +233,31 @@ export default function SitrepView({
   onOpenDebrief: () => void
 }) {
   const [sitrep, setSitrep] = useState<Sitrep | null>(null)
+  const [blockStatus, setBlockStatus] = useState<BlockStatus>({})
+  const [revision, setRevision] = useState(0)
   const [generatedAt, setGeneratedAt] = useState('')
   const [loading, setLoading] = useState(false)
+  const [replanning, setReplanning] = useState(false)
+  const [replanOpen, setReplanOpen] = useState(false)
+  const [replanNote, setReplanNote] = useState('')
   const [stagesReached, setStagesReached] = useState(0)
   const [justGenerated, setJustGenerated] = useState(false)
   const [hotIdx, setHotIdx] = useState<number | null>(null)
+  const [busyBlock, setBusyBlock] = useState<number | null>(null)
+  const [closedIds, setClosedIds] = useState<Record<string, boolean>>({})
   const [error, setError] = useState('')
   const stageTimer = useRef<number | undefined>(undefined)
   const blockRefs = useRef<(HTMLDivElement | null)[]>([])
+  const replanInput = useRef<HTMLInputElement | null>(null)
+
+  const busy = loading || replanning
 
   const load = async () => {
     try {
       const res = await api.latestSitrep()
       setSitrep(res.sitrep?.body ?? null)
+      setBlockStatus(res.sitrep?.block_status ?? {})
+      setRevision(res.sitrep?.revision ?? 0)
       setGeneratedAt(res.sitrep?.created_at ?? '')
       setJustGenerated(false)
     } catch (e) {
@@ -231,17 +265,24 @@ export default function SitrepView({
     }
   }
 
+  const runStages = (count: number) => {
+    setStagesReached(1)
+    stageTimer.current = window.setInterval(
+      () => setStagesReached((s) => Math.min(s + 1, count)),
+      7000,
+    )
+  }
+
   const generate = async () => {
     setLoading(true)
     setError('')
-    setStagesReached(1)
-    stageTimer.current = window.setInterval(
-      () => setStagesReached((s) => Math.min(s + 1, GENERATION_STAGES.length)),
-      7000,
-    )
+    runStages(GENERATION_STAGES.length)
     try {
       const res = await api.generateSitrep()
       setSitrep(res.sitrep)
+      setBlockStatus({})
+      setRevision(0)
+      setClosedIds({})
       setGeneratedAt(new Date().toISOString())
       setJustGenerated(true)
     } catch (e) {
@@ -252,10 +293,78 @@ export default function SitrepView({
     }
   }
 
+  const replan = async () => {
+    setReplanning(true)
+    setError('')
+    runStages(REPLAN_STAGES.length)
+    try {
+      const res = await api.replanSitrep(replanNote.trim())
+      setSitrep(res.sitrep)
+      setBlockStatus(res.sitrep?.block_status ?? {})
+      setRevision(res.sitrep?.revision ?? revision + 1)
+      setGeneratedAt(new Date().toISOString())
+      setJustGenerated(true)
+      setReplanOpen(false)
+      setReplanNote('')
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e))
+    } finally {
+      window.clearInterval(stageTimer.current)
+      setReplanning(false)
+    }
+  }
+
+  const markBlock = async (idx: number, status: 'done' | 'skipped' | null) => {
+    if (!sitrep || busyBlock !== null) return
+    const prev = blockStatus
+    const next = { ...blockStatus }
+    if (status === null) delete next[String(idx)]
+    else next[String(idx)] = status
+    setBlockStatus(next) // optimistic; the day should feel immediate
+    setBusyBlock(idx)
+    try {
+      const res = await api.setBlockStatus(sitrep.date, idx, status)
+      setBlockStatus(res.block_status)
+    } catch (e) {
+      setBlockStatus(prev)
+      setError(String(e instanceof Error ? e.message : e))
+    } finally {
+      setBusyBlock(null)
+    }
+  }
+
+  const closeTask = async (taskId: string, title: string) => {
+    try {
+      await api.updateTask(taskId, { status: 'done' })
+      setClosedIds((c) => ({ ...c, [taskId]: true }))
+    } catch (e) {
+      setError(`Could not mark "${title}" done: ${e instanceof Error ? e.message : e}`)
+    }
+  }
+
+  const reopenTask = async (taskId: string) => {
+    try {
+      await api.updateTask(taskId, { status: 'open' })
+      setClosedIds((c) => {
+        const next = { ...c }
+        delete next[taskId]
+        return next
+      })
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e))
+    }
+  }
+
+  const challengeDrop = (title: string) => {
+    setReplanOpen(true)
+    setReplanNote(`Do not drop "${title}" today. Make room for it and tell me what gives way.`)
+    window.setTimeout(() => replanInput.current?.focus(), 50)
+  }
+
   // Views stay mounted across tab switches; refetch on activation so the
   // scheduled morning plan (or one generated elsewhere) is never stale here.
   useEffect(() => {
-    if (active && !loading) load()
+    if (active && !busy) load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active])
 
@@ -270,6 +379,7 @@ export default function SitrepView({
     window.setTimeout(() => setHotIdx(null), 1600)
   }
 
+  const isToday = sitrep?.date === todayLocalISO()
   const warn = sitrep?.command_signal?.overcommitment_warning
   const hasWarn = Boolean(warn && String(warn).trim().toLowerCase() !== 'null')
   const prios = sitrep?.execution?.priorities
@@ -282,6 +392,7 @@ export default function SitrepView({
   const hasSignal = Boolean(
     cs?.decision_points?.length || cs?.blockers_to_escalate?.length || cs?.say_no_to?.length || hasWarn,
   )
+  const stages = replanning ? REPLAN_STAGES : GENERATION_STAGES
 
   return (
     <div>
@@ -291,18 +402,74 @@ export default function SitrepView({
           <h2>{sitrep ? sitrep.date : 'No game plan yet'}</h2>
           {generatedAt && sitrep && (
             <p className="lede mono" style={{ fontSize: '0.7rem' }}>
-              generated {new Date(generatedAt).toLocaleString()} &middot; amazon nova pro
+              {revision > 0
+                ? `revision ${revision} · replanned ${new Date(generatedAt).toLocaleTimeString()}`
+                : `generated ${new Date(generatedAt).toLocaleString()}`}{' '}
+              &middot; amazon nova pro
             </p>
           )}
         </div>
-        <button className="primary" onClick={generate} disabled={loading}>
-          {loading ? 'Working' : sitrep ? 'Regenerate' : 'Generate game plan'}
-        </button>
+        <div className="head-actions">
+          {sitrep && isToday && (
+            <button
+              className="primary"
+              onClick={() => {
+                setReplanOpen((o) => !o)
+                window.setTimeout(() => replanInput.current?.focus(), 50)
+              }}
+              disabled={busy}
+              title="Keep the mission and the morning; rebuild only what remains"
+            >
+              Replan the rest of today
+            </button>
+          )}
+          <button
+            className={sitrep && isToday ? 'ghost' : 'primary'}
+            onClick={generate}
+            disabled={busy}
+            title={sitrep ? 'Throw the whole plan away and write a new one' : undefined}
+          >
+            {loading ? 'Working' : sitrep ? 'Regenerate' : 'Generate game plan'}
+          </button>
+        </div>
       </div>
 
-      {loading && (
-        <div className="genfeed" role="status" aria-label="Generating the game plan">
-          {GENERATION_STAGES.slice(0, stagesReached).map((s, i) => (
+      {replanOpen && !busy && (
+        <div className="replan-bar">
+          <label className="kicker" htmlFor="replan-note">
+            report in &mdash; what changed?
+          </label>
+          <div className="replan-row">
+            <input
+              id="replan-note"
+              ref={replanInput}
+              value={replanNote}
+              placeholder='e.g. "finished the memo early; dentist ran long; new urgent ask from finance"'
+              onChange={(e) => setReplanNote(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && replan()}
+            />
+            <button className="primary" onClick={replan}>
+              Replan
+            </button>
+            <button
+              className="ghost"
+              onClick={() => {
+                setReplanOpen(false)
+                setReplanNote('')
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+          <p className="hint">
+            The mission stays. Finished blocks stay. Only the road ahead is redrawn.
+          </p>
+        </div>
+      )}
+
+      {busy && (
+        <div className="genfeed" role="status" aria-label={replanning ? 'Replanning the rest of the day' : 'Generating the game plan'}>
+          {stages.slice(0, stagesReached).map((s, i) => (
             <p className={`genline${i === stagesReached - 1 ? ' live' : ''}`} key={s}>
               <span className="genmark" aria-hidden="true">
                 {i === stagesReached - 1 ? '▸' : '✓'}
@@ -331,7 +498,11 @@ export default function SitrepView({
             commits to one mission, a timed plan, and a list of deliberate drops.
           </p>
           <p>
-            <strong>3.</strong> In the evening, answer three short questions in the
+            <strong>3.</strong> As the day moves, mark blocks done or skipped and
+            report changes; the plan renegotiates the rest of the day around reality.
+          </p>
+          <p>
+            <strong>4.</strong> In the evening, answer three short questions in the
             Debrief tab. Patterns in your answers become preferences that shape
             every future game plan.
           </p>
@@ -343,8 +514,9 @@ export default function SitrepView({
           {!!sitrep.execution?.time_blocks?.length && (
             <DayTimeline
               blocks={sitrep.execution.time_blocks}
-              isToday={sitrep.date === todayLocalISO()}
-              busy={loading}
+              blockStatus={blockStatus}
+              isToday={isToday}
+              busy={busy}
               hotIdx={hotIdx}
               onHot={setHotIdx}
               onJump={jumpToBlock}
@@ -383,23 +555,64 @@ export default function SitrepView({
           <section className="para" style={{ ['--i' as string]: 3 }} aria-labelledby="para-3">
             <ParaHead num="3" title="Execution" plain="the plan: time blocks, priorities, deliberate cuts" />
             <div className="blocks">
-              {sitrep.execution?.time_blocks?.map((b, i) => (
-                <div
-                  className={`block${hotIdx === i ? ' hot' : ''}`}
-                  key={i}
-                  ref={(el) => {
-                    blockRefs.current[i] = el
-                  }}
-                  onMouseEnter={() => setHotIdx(i)}
-                  onMouseLeave={() => setHotIdx(null)}
-                >
-                  <span className="when">
-                    {b.start}&ndash;{b.end}
-                  </span>
-                  <span className="what">{b.label}</span>
-                  <span className="intent">{b.intent}</span>
-                </div>
-              ))}
+              {sitrep.execution?.time_blocks?.map((b, i) => {
+                const st = blockStatus[String(i)]
+                return (
+                  <div
+                    className={`block${hotIdx === i ? ' hot' : ''}${st ? ` is-${st}` : ''}`}
+                    key={i}
+                    ref={(el) => {
+                      blockRefs.current[i] = el
+                    }}
+                    onMouseEnter={() => setHotIdx(i)}
+                    onMouseLeave={() => setHotIdx(null)}
+                  >
+                    <span className="when">
+                      {b.start}&ndash;{b.end}
+                    </span>
+                    <span className="what">
+                      {st === 'done' && <span className="done-mark" aria-hidden="true">{'✓ '}</span>}
+                      {b.label}
+                      {st === 'skipped' && <span className="skip-note"> &middot; skipped</span>}
+                    </span>
+                    {isToday && (
+                      <span className="block-actions">
+                        {!st && (
+                          <>
+                            <button
+                              className="mini ghost"
+                              disabled={busyBlock !== null}
+                              aria-label={`Mark block "${b.label}" done`}
+                              onClick={() => markBlock(i, 'done')}
+                            >
+                              Done
+                            </button>
+                            <button
+                              className="mini ghost"
+                              disabled={busyBlock !== null}
+                              aria-label={`Mark block "${b.label}" skipped`}
+                              onClick={() => markBlock(i, 'skipped')}
+                            >
+                              Skip
+                            </button>
+                          </>
+                        )}
+                        {st && (
+                          <button
+                            className="mini ghost"
+                            disabled={busyBlock !== null}
+                            aria-label={`Clear the ${st} mark on "${b.label}"`}
+                            onClick={() => markBlock(i, null)}
+                          >
+                            Undo
+                          </button>
+                        )}
+                      </span>
+                    )}
+                    <span className="intent">{b.intent}</span>
+                  </div>
+                )
+              })}
             </div>
             {(['p1', 'p2', 'p3'] as const).map(
               (p) =>
@@ -409,11 +622,33 @@ export default function SitrepView({
                       {prioMeta[p].label} &middot; {prioMeta[p].plain}
                     </span>
                     <div className="prio-items">
-                      {prios[p].map((t, i) => (
-                        <span key={i}>
-                          {t.title} <span className="reason">{t.reason}</span>
-                        </span>
-                      ))}
+                      {prios[p].map((t, i) => {
+                        const closed = t.task_id ? closedIds[t.task_id] : false
+                        return (
+                          <span key={i} className={closed ? 'prio-closed' : undefined}>
+                            {closed ? <s>{t.title}</s> : t.title}{' '}
+                            <span className="reason">{t.reason}</span>
+                            {isToday && t.task_id && !closed && (
+                              <button
+                                className="mini ghost inline-act"
+                                aria-label={`Mark task "${t.title}" done`}
+                                onClick={() => closeTask(t.task_id!, t.title)}
+                              >
+                                Done
+                              </button>
+                            )}
+                            {closed && (
+                              <button
+                                className="mini ghost inline-act"
+                                aria-label={`Reopen task "${t.title}"`}
+                                onClick={() => reopenTask(t.task_id!)}
+                              >
+                                Undo
+                              </button>
+                            )}
+                          </span>
+                        )
+                      })}
                     </div>
                   </div>
                 ),
@@ -426,10 +661,21 @@ export default function SitrepView({
                     <span key={i}>
                       <span className="dropped-title">{d.title}</span>{' '}
                       <span className="reason">{d.reason}</span>
+                      {isToday && (
+                        <button
+                          className="mini ghost inline-act"
+                          aria-label={`Challenge the decision to drop "${d.title}"`}
+                          title="Disagree? Send it back for renegotiation."
+                          onClick={() => challengeDrop(d.title)}
+                        >
+                          Challenge
+                        </button>
+                      )}
                     </span>
                   ))}
                   <span className="group-plain">
-                    cut so that today stays achievable; they return to the pool tomorrow
+                    cut so that today stays achievable; they return to the pool tomorrow.
+                    Disagree with a cut? Challenge it and the plan renegotiates.
                   </span>
                 </div>
               </div>

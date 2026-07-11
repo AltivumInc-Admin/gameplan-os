@@ -35,6 +35,9 @@ Doctrine — non-negotiable rules:
    mission and the riskiest block, never generic "how was your day".
 9. command_signal.overcommitment_warning is JSON null when the load is
    achievable; otherwise one plain sentence naming what to renegotiate.
+10. Every task_id you emit MUST be copied exactly from the OPEN TASKS list.
+   If a priority, drop, or block is not tied to a listed task, use null for
+   task_id (or [] for a block's task_ids). Never invent an id.
 
 You respond with ONLY a valid JSON object matching the requested schema."""
 
@@ -111,6 +114,56 @@ slips, what the principal underestimates, recurring friction):
 {prior_label} — its mission and P1s; address carryover explicitly in
 Situation, noting the gap if it is not from yesterday:
 {prior_mission}
+
+OUTPUT: a single JSON object with exactly this schema:
+{json.dumps(SCHEMA, indent=2)}"""
+
+
+def build_replan_prompt(*, today: str, weekday: str, local_now: str,
+                        current_plan: dict, block_status: dict,
+                        note: str, open_tasks: list[dict],
+                        preferences: list[dict]) -> str:
+    """Mid-day partial replan: pin the mission and the past, rebuild what remains.
+
+    The note is the principal reporting reality ("dentist ran long, memo is
+    done") — the single input that turns a static order into a negotiation.
+    """
+    prefs_text = "\n".join(f"- {p['text']}" for p in preferences) or "- (none learned yet)"
+    status_text = json.dumps(block_status) if block_status else "{}"
+    return f"""Revise today's game plan mid-day. This is a REPLAN, not a fresh plan.
+
+DATE: {today} ({weekday}) — current local time {local_now}
+
+REPLAN RULES (these override nothing in doctrine; they add to it):
+- Keep mission.statement VERBATIM from the current plan. The mission does not
+  move mid-day unless the principal's note explicitly kills it; if the note
+  does, say so plainly in situation.overview and state the new mission.
+- Time blocks that END before {local_now} are history: copy them into
+  time_blocks unchanged, in the same order. Do not rewrite the past.
+- Rebuild only the remainder of the day from {local_now} forward, honoring
+  the principal's note below. Keep at least 30% of the remaining working
+  window unallocated as reserve.
+- Re-tier priorities and update deliberately_dropped to reflect reality. If
+  something must now be cut to protect the mission, cut it and give the
+  reason. If the note says something finished, do not schedule it again.
+- situation.overview must open with one sentence acknowledging what changed.
+- Keep debrief_questions relevant to the revised plan.
+
+PRINCIPAL'S REPORT (what actually happened; trust it):
+{note or "(no note — replan from the block statuses and the clock alone)"}
+
+CURRENT PLAN (today's, being revised):
+{json.dumps(current_plan, default=str)}
+
+BLOCK STATUS so far (index into current time_blocks -> done|skipped;
+unlisted blocks are unreported):
+{status_text}
+
+OPEN TASKS (id, title, notes, project, due, triage scores):
+{json.dumps(open_tasks, default=str)}
+
+LEARNED PREFERENCES (honor these; override only with stated reason):
+{prefs_text}
 
 OUTPUT: a single JSON object with exactly this schema:
 {json.dumps(SCHEMA, indent=2)}"""

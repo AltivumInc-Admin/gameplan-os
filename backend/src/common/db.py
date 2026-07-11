@@ -23,6 +23,7 @@ see DynamoDB types.
 """
 import datetime
 import decimal
+import hashlib
 import uuid
 from typing import Any
 
@@ -125,9 +126,16 @@ def update_task(task_id: str, fields: dict) -> None:
 
 # ---------- sitreps (daily game plans) ----------
 
-def put_sitrep(date: str, body: dict) -> None:
-    _table().put_item(Item=_clean({"PK": _PK, "SK": f"SITREP#{date}", "date": date,
-                                   "body": body, "created_at": _now()}))
+def put_sitrep(date: str, body: dict, *, block_status: dict | None = None,
+               revision: int = 0, replanned_at: str | None = None) -> None:
+    """Store the day's plan. A fresh generate resets block_status and
+    revision; a replan passes carried-over values explicitly."""
+    item = {"PK": _PK, "SK": f"SITREP#{date}", "date": date,
+            "body": body, "created_at": _now(),
+            "block_status": block_status or {}, "revision": revision}
+    if replanned_at:
+        item["replanned_at"] = replanned_at
+    _table().put_item(Item=_clean(item))
 
 
 def get_sitrep(date: str) -> dict | None:
@@ -142,6 +150,39 @@ def latest_sitrep() -> dict | None:
         ScanIndexForward=False, Limit=1)
     items = resp.get("Items", [])
     return _out(items[0]) if items else None
+
+
+BLOCK_STATUSES = {"done", "skipped"}
+
+
+def set_block_status(date: str, index: Any, status: str | None) -> dict:
+    """Record how a time block actually went; None clears the mark.
+
+    Stored as a top-level map on the sitrep item, keyed by the block's index
+    in body.execution.time_blocks. Read-modify-write is fine single-user.
+    Returns the updated map. Raises ValueError on bad input or missing plan.
+    """
+    if status is not None and status not in BLOCK_STATUSES:
+        raise ValueError(f"invalid block status {status!r}; "
+                         f"must be one of {sorted(BLOCK_STATUSES)} or null")
+    item = get_sitrep(date)
+    if item is None:
+        raise ValueError(f"no plan on record for {date}")
+    blocks = (item.get("body", {}).get("execution", {}) or {}).get("time_blocks") or []
+    if not isinstance(index, int) or not (0 <= index < len(blocks)):
+        raise ValueError(f"block index {index!r} out of range (plan has {len(blocks)} blocks)")
+    statuses = {str(k): v for k, v in (item.get("block_status") or {}).items()}
+    if status is None:
+        statuses.pop(str(index), None)
+    else:
+        statuses[str(index)] = status
+    _table().update_item(
+        Key={"PK": _PK, "SK": f"SITREP#{date}"},
+        UpdateExpression="SET block_status = :s",
+        ConditionExpression="attribute_exists(PK)",
+        ExpressionAttributeValues={":s": _clean(statuses)},
+    )
+    return statuses
 
 
 # ---------- debriefs ----------
@@ -185,3 +226,19 @@ def append_preferences(new_prefs: list[dict]) -> None:
     prefs = _merge_preferences(get_preferences(), new_prefs, _now())
     _table().put_item(Item=_clean({"PK": _PK, "SK": "PREF#profile",
                                    "preferences": prefs, "updated_at": _now()}))
+
+
+def preference_id(text: str) -> str:
+    """Stable id for a preference, derived from its text (the merge key)."""
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
+
+
+def delete_preference(pref_id: str) -> bool:
+    """Remove one learned preference by its id. True if something was removed."""
+    prefs = get_preferences()
+    kept = [p for p in prefs if preference_id(p.get("text", "")) != pref_id]
+    if len(kept) == len(prefs):
+        return False
+    _table().put_item(Item=_clean({"PK": _PK, "SK": "PREF#profile",
+                                   "preferences": kept, "updated_at": _now()}))
+    return True

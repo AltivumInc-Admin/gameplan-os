@@ -44,12 +44,39 @@ export interface Task {
   triage?: { urgency: number; impact: number; effort_hours: number; rationale: string }
 }
 
+export interface Preference {
+  id: string
+  text: string
+  source?: string
+  confidence?: string
+  learned_at?: string
+}
+
+export type BlockStatus = Record<string, 'done' | 'skipped'>
+
+export interface AppliedTaskUpdate {
+  task_id: string
+  status: 'done' | 'dropped'
+  title: string
+}
+
 export const api = {
   dump: (text: string) => req('POST', '/dump', { text }),
   tasks: (status?: string) =>
     req('GET', `/tasks${status ? `?status=${status}` : ''}`) as Promise<{ tasks: Task[] }>,
+  createTask: (fields: { title: string } & Partial<Task>) =>
+    req('POST', '/tasks', fields) as Promise<{ task: Task }>,
   updateTask: (id: string, fields: Partial<Task>) => req('PATCH', `/tasks/${id}`, fields),
   generateSitrep: () => req('POST', '/sitrep/generate'),
+  replanSitrep: (note: string) => req('POST', '/sitrep/replan', { note }),
   latestSitrep: () => req('GET', '/sitrep/latest'),
-  debrief: (answers: Record<string, string>) => req('POST', '/debrief', { answers }),
+  setBlockStatus: (date: string, index: number, status: 'done' | 'skipped' | null) =>
+    req('PATCH', `/sitrep/${date}/blocks`, { index, status }) as Promise<{ block_status: BlockStatus }>,
+  preferences: () => req('GET', '/preferences') as Promise<{ preferences: Preference[] }>,
+  deletePreference: (id: string) => req('DELETE', `/preferences/${id}`),
+  debrief: (answers: Record<string, string>) =>
+    req('POST', '/debrief', { answers }) as Promise<{
+      analysis: Record<string, unknown>
+      applied_task_updates: AppliedTaskUpdate[]
+    }>,
 }

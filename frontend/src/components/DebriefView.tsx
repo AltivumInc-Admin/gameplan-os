@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../api'
+import { api, type AppliedTaskUpdate } from '../api'
 
 interface Analysis {
   summary: string
@@ -42,6 +42,8 @@ export default function DebriefView({ active }: { active: boolean }) {
   // one plan can never pre-fill the questions of another.
   const [answers, setAnswers] = useState<Record<string, string>>(() => loadDraft().answers)
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
+  const [receipt, setReceipt] = useState<AppliedTaskUpdate[]>([])
+  const [reverted, setReverted] = useState<Record<string, boolean>>({})
   const [busy, setBusy] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')
@@ -92,7 +94,9 @@ export default function DebriefView({ active }: { active: boolean }) {
         Object.entries(answers).map(([k, v]) => [k, v.trim()]).filter(([, v]) => v),
       )
       const res = await api.debrief(trimmed)
-      setAnalysis(res.analysis)
+      setAnalysis(res.analysis as unknown as Analysis)
+      setReceipt(res.applied_task_updates ?? [])
+      setReverted({})
       setAnswers({})
       sessionStorage.removeItem(DRAFT_KEY)
     } catch (e) {
@@ -178,9 +182,49 @@ export default function DebriefView({ active }: { active: boolean }) {
           </div>
         )}
 
+        {!!receipt.length && (
+          <div className="learned">
+            <div className="para-head">
+              <h3 className="para-title">Tasks it closed from your answers</h3>
+              <span className="para-plain">nothing is closed silently; undo anything wrong</span>
+            </div>
+            {receipt.map((u) => (
+              <div className="learned-item" key={u.task_id}>
+                <span className={`tag ${u.status === 'done' ? 'ok' : 'drop'}`}>{u.status}</span>
+                <span>
+                  {reverted[u.task_id] ? <s>{u.title}</s> : u.title}
+                  {!reverted[u.task_id] ? (
+                    <button
+                      className="mini ghost inline-act"
+                      aria-label={`Reopen task "${u.title}"`}
+                      onClick={async () => {
+                        try {
+                          await api.updateTask(u.task_id, { status: 'open' })
+                          setReverted((r) => ({ ...r, [u.task_id]: true }))
+                        } catch (e) {
+                          setError(String(e instanceof Error ? e.message : e))
+                        }
+                      }}
+                    >
+                      Undo
+                    </button>
+                  ) : (
+                    <span className="saved"> &mdash; reopened</span>
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {analysis.tomorrow_note && (
           <p className="dim">
             Tomorrow&rsquo;s planner reads this first: &ldquo;{analysis.tomorrow_note}&rdquo;
+          </p>
+        )}
+        {error && (
+          <p className="error" role="alert">
+            {error}
           </p>
         )}
       </div>

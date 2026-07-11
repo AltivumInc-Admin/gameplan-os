@@ -3,7 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
+    <script>
+      // Stamp the theme before first paint so neither theme flashes.
+      // Kept inline and dependency-free; theme.ts owns changes after boot.
+      (function () {
+        try {
+          var saved = localStorage.getItem('sitrep-theme');
+          var theme = saved === 'light' || saved === 'dark'
+            ? saved
+            : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+          document.documentElement.setAttribute('data-theme', theme);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
     <meta
       name="description"
       content="Game Plan OS: a personal AI that writes your day's game plan every morning, in the spirit of a military operations order, and learns from a three-question evening debrief. Built on AWS."

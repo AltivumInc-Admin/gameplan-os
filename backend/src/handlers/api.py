@@ -9,11 +9,15 @@ Routes:
   POST  /dump               {text}            -> triage brain dump into tasks
   GET   /tasks?status=open                    -> list tasks
   POST  /tasks              {title,...}       -> create one task directly
-  PATCH /tasks/{id}         {status,...}      -> update task
+  PATCH /tasks/{id}         {status,...}      -> update task (open|done|dropped, triage, ...)
   POST  /sitrep/generate                      -> generate today's plan on demand
+  POST  /sitrep/replan      {note}            -> revise the rest of today, mission pinned
+  PATCH /sitrep/{date}/blocks {index,status}  -> mark a block done|skipped|null
   GET   /sitrep/latest                        -> most recent plan
   GET   /sitrep/{date}                        -> plan for a date (YYYY-MM-DD)
-  POST  /debrief            {answers:{q1,q2,q3}} -> run evening after-action loop
+  GET   /preferences                          -> learned preferences, with ids
+  DELETE /preferences/{id}                    -> forget one learned preference
+  POST  /debrief            {answers:{q1,q2,q3}} -> evening loop; returns analysis + receipt
   GET   /health                               -> unauthenticated liveness check
 """
 import decimal
@@ -89,9 +93,12 @@ def handler(event, _context):
             return _resp(200, {"tasks": db.list_tasks(qs.get("status"))})
 
         if method == "POST" and path == "/tasks":
-            if not body.get("title"):
+            task = service._normalize_task(body)
+            if task is None:
                 return _resp(400, {"error": "title is required"})
-            return _resp(200, {"task": db.put_task(body)})
+            if not task["triage"].get("rationale"):
+                task["triage"]["rationale"] = "added directly"
+            return _resp(200, {"task": db.put_task(task)})
 
         if method == "PATCH" and path.startswith("/tasks/"):
             try:
@@ -107,6 +114,21 @@ def handler(event, _context):
         if method == "POST" and path == "/sitrep/generate":
             return _resp(200, {"sitrep": service.generate_sitrep()})
 
+        if method == "POST" and path == "/sitrep/replan":
+            try:
+                return _resp(200, {"sitrep": service.replan_sitrep(body.get("note") or "")})
+            except ValueError as exc:
+                return _resp(409, {"error": str(exc)})
+
+        if method == "PATCH" and path.startswith("/sitrep/") and path.endswith("/blocks"):
+            date = path.split("/")[2]
+            try:
+                statuses = db.set_block_status(
+                    date, body.get("index"), body.get("status"))
+            except ValueError as exc:
+                return _resp(400, {"error": str(exc)})
+            return _resp(200, {"block_status": statuses})
+
         if method == "GET" and path == "/sitrep/latest":
             item = db.latest_sitrep()
             return _resp(200, {"sitrep": item})
@@ -114,11 +136,21 @@ def handler(event, _context):
         if method == "GET" and path.startswith("/sitrep/"):
             return _resp(200, {"sitrep": db.get_sitrep(path.split("/")[-1])})
 
+        if method == "GET" and path == "/preferences":
+            prefs = db.get_preferences()
+            return _resp(200, {"preferences": [
+                {**p, "id": db.preference_id(p.get("text", ""))} for p in prefs]})
+
+        if method == "DELETE" and path.startswith("/preferences/"):
+            if db.delete_preference(path.split("/")[-1]):
+                return _resp(200, {"ok": True})
+            return _resp(404, {"error": "unknown preference id"})
+
         if method == "POST" and path == "/debrief":
             answers = body.get("answers") or {}
             if not answers:
                 return _resp(400, {"error": "answers is required"})
-            return _resp(200, {"analysis": service.process_debrief(answers)})
+            return _resp(200, service.process_debrief(answers))
 
         return _resp(404, {"error": f"no route for {method} {path}"})
 

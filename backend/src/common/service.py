@@ -91,11 +91,64 @@ def _validate_plan(body: dict) -> None:
         raise ValueError("model returned a plan with an empty mission statement")
 
 
+def _scrub_task_ids(body: dict, valid_ids: set[str]) -> None:
+    """Null out model-invented task ids in place.
+
+    The UI and the agent treat plan task_ids as addressable references into
+    the task pool; a hallucinated id would wire a button to nothing (or to
+    the wrong task), so unknown ids degrade to null rather than surviving.
+    """
+    ex = body.get("execution", {}) or {}
+    for block in ex.get("time_blocks") or []:
+        if isinstance(block, dict):
+            ids = block.get("task_ids")
+            block["task_ids"] = [i for i in ids if i in valid_ids] if isinstance(ids, list) else []
+    prios = ex.get("priorities") or {}
+    for tier in ("p1", "p2", "p3"):
+        for entry in prios.get(tier) or []:
+            if isinstance(entry, dict) and entry.get("task_id") not in valid_ids:
+                entry["task_id"] = None
+    for entry in ex.get("deliberately_dropped") or []:
+        if isinstance(entry, dict) and entry.get("task_id") not in valid_ids:
+            entry["task_id"] = None
+
+
+def _carry_block_statuses(old_blocks: list, statuses: dict, cutoff_hhmm: str) -> dict:
+    """Keep status marks only for blocks that ended before the replan cutoff.
+
+    Replanning rewrites the future part of time_blocks, so indexes of
+    still-to-come blocks are meaningless afterward; past blocks are copied
+    through unchanged (same indexes) and keep their marks.
+    """
+    kept = {}
+    for key, status in (statuses or {}).items():
+        try:
+            idx = int(key)
+            block = old_blocks[idx]
+        except (ValueError, TypeError, IndexError):
+            continue
+        if isinstance(block, dict) and str(block.get("end", "99:99")) <= cutoff_hhmm:
+            kept[str(idx)] = status
+    return kept
+
+
+def _finalize_plan(body: dict, today: str, open_tasks: list[dict]) -> None:
+    """Shared post-model boundary normalization for generate and replan."""
+    _validate_plan(body)
+    _scrub_task_ids(body, {t["id"] for t in open_tasks})
+    # Normalize the "no warning" sentinel once, at the boundary.
+    warn = body.get("command_signal", {}).get("overcommitment_warning")
+    if not warn or (isinstance(warn, str) and warn.strip().lower() == "null"):
+        body["command_signal"]["overcommitment_warning"] = None
+    body["date"] = today
+
+
 def generate_sitrep() -> dict:
     """Generate (or regenerate) today's game plan."""
     now = _local_now()
     today = now.date().isoformat()
     prior, prior_date = _prior_plan()
+    open_tasks = db.list_tasks("open")
 
     body = bedrock.converse_json(
         config.NOVA_PRO_MODEL_ID,
@@ -104,21 +157,58 @@ def generate_sitrep() -> dict:
             today=today,
             weekday=now.strftime("%A"),
             local_now=now.strftime("%H:%M"),
-            open_tasks=db.list_tasks("open"),
+            open_tasks=open_tasks,
             preferences=db.get_preferences(),
             recent_debriefs=db.recent_debriefs(5),
             prior_sitrep=prior,
             prior_date=prior_date,
         ),
         max_tokens=3500, temperature=0.4)
-    _validate_plan(body)
-    # Normalize the "no warning" sentinel once, at the boundary.
-    warn = body.get("command_signal", {}).get("overcommitment_warning")
-    if not warn or (isinstance(warn, str) and warn.strip().lower() == "null"):
-        body["command_signal"]["overcommitment_warning"] = None
-    body["date"] = today
+    _finalize_plan(body, today, open_tasks)
     db.put_sitrep(today, body)
     return body
+
+
+def replan_sitrep(note: str = "") -> dict:
+    """Revise the remainder of today: pin the mission and the past, rebuild
+    what remains from the clock forward. The note is the principal reporting
+    reality; it becomes the agent's main verb later."""
+    now = _local_now()
+    today = now.date().isoformat()
+    local_now = now.strftime("%H:%M")
+    current = db.get_sitrep(today)
+    if current is None:
+        raise ValueError("no plan for today yet; generate one before replanning")
+    open_tasks = db.list_tasks("open")
+    block_status = {str(k): v for k, v in (current.get("block_status") or {}).items()}
+
+    body = bedrock.converse_json(
+        config.NOVA_PRO_MODEL_ID,
+        sitrep_prompt.SYSTEM,
+        sitrep_prompt.build_replan_prompt(
+            today=today,
+            weekday=now.strftime("%A"),
+            local_now=local_now,
+            current_plan=current.get("body", {}),
+            block_status=block_status,
+            note=(note or "").strip(),
+            open_tasks=open_tasks,
+            preferences=db.get_preferences(),
+        ),
+        max_tokens=3500, temperature=0.3)
+    _finalize_plan(body, today, open_tasks)
+
+    old_blocks = (current.get("body", {}).get("execution", {}) or {}).get("time_blocks") or []
+    carried = _carry_block_statuses(old_blocks, block_status, local_now)
+    revision = int(current.get("revision") or 0) + 1
+    db.put_sitrep(today, body, block_status=carried, revision=revision,
+                  replanned_at=now.isoformat())
+    print(json.dumps({"event": "replan", "date": today, "revision": revision,
+                      "note_chars": len(note or ""), "carried_statuses": len(carried)}))
+    result = dict(body)
+    result["block_status"] = carried
+    result["revision"] = revision
+    return result
 
 
 def process_debrief(answers: dict) -> dict:
@@ -167,7 +257,11 @@ def process_debrief(answers: dict) -> dict:
     print(json.dumps({"event": "debrief_applied", "plan_date": sitrep_date,
                       "task_updates": applied, "skipped_unknown_ids": skipped,
                       "prefs_added": [p["text"] for p in high_conf]}))
-    return analysis
+    # The receipt: which tasks the debrief actually closed, with titles, so
+    # the UI can show the mutation instead of applying it silently.
+    titles = {t["id"]: t.get("title", "") for t in db.list_tasks()}
+    receipt = [{**u, "title": titles.get(u["task_id"], "")} for u in applied]
+    return {"analysis": analysis, "applied_task_updates": receipt}
 
 
 # ---------- email rendering ----------
