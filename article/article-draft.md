@@ -32,11 +32,19 @@ you have to remember to talk to. It runs on a daily rhythm:
   gets *deliberately dropped*, with reasons), **Sustainment** (energy, breaks),
   and **Command & Signal** (decision points, blockers, and what to say no to
   today). It lands in my inbox and on a dashboard.
+- **As the day moves**, the plan is answerable. I mark blocks done or
+  skipped, and when reality diverges I report in — "finished the memo early;
+  dentist ran long" — and the plan renegotiates only the rest of the day: the
+  mission stays pinned, finished blocks stay history, and every new cut comes
+  with a reason. If I disagree with something it dropped, one click challenges
+  the cut and sends it back for renegotiation.
 - **Every evening**, it debriefs me: three questions generated from that
   morning's actual order, never generic. An after-action review compares plan
   to reality, names what slipped and why, and — when a pattern shows up across
   multiple debriefs — writes a preference into my profile. "Estimates on
   writing tasks run 2x long; pad them." Tomorrow's order is built on it.
+  Everything it learns is visible on a Memory tab, and anything wrong can be
+  deleted — a learning system you cannot inspect is a system you cannot trust.
 
 The doctrine is opinionated by design: one mission only, never more than 70%
 of working hours scheduled (unallocated time is the reserve — friction always
@@ -92,9 +100,23 @@ confident stays out of the profile. Without that filter, the agent learns
 noise; with it, watching my own work patterns accumulate in a DynamoDB
 document is genuinely uncomfortable in the way good feedback is.
 
+**A plan you can answer back to.** The first version rendered the morning
+order as read-only text, and using it surfaced the flaw immediately: a plan
+you can only regenerate wholesale is a report, not a tool. So the plan schema
+carries task IDs end to end (with hallucinated IDs scrubbed server-side),
+every block takes a done or skipped mark, the drop list takes a challenge,
+and a partial replan verb pins the mission and the finished morning while
+rebuilding only what remains. Watching Nova Pro handle "the draft is
+finished; a new urgent ask came in" — preserving history to the minute,
+scheduling the new work at the current time, and moving the now-redundant
+item to the drop list with the reason quoted back — was the moment this
+stopped feeling like a demo.
+
 **Deliberate cuts.** No Cognito, no calendar integration, no multi-user —
 a shared-secret header guards a single-principal tool. Every one of those
 features was a schedule risk with zero payoff for a weekend challenge.
+(Calendar, Todoist, and a Telegram channel to the same brain are the obvious
+next phase, and the architecture leaves room for them.)
 
 The real snags, honestly: **DynamoDB rejected the model's JSON on the very
 first call** — Nova returns `effort_hours: 1.5` and boto3 will not accept a
@@ -156,13 +178,18 @@ scheduled event a day, one email a day.
 - **Repo:** https://github.com/AltivumInc-Admin/gameplan-os (public — code,
   prompts, SAM template, and deployment guide)
 - **Live app:** https://main.dpg1b347fl82l.amplifyapp.com — deployed on
-  Amplify Hosting with CI/CD from the repo. It is a single-principal personal
-  tool behind an access key, so the screenshots below show the working loop.
-- Screenshots ready in `article/screenshots/`: 01 game plan hero (timeline +
-  mission), 02 full five-section plan, 03 task pool with triage scores,
-  04 evening debrief questions, 05 after-action review with two learned
-  preferences saved. [TODO: optionally add the morning email from your inbox
-  and a DynamoDB console shot, then upload all to Builder Center.]
+  Amplify Hosting with CI/CD from the repo. The landing page itself is a
+  working demo: it renders a sample morning brief with the real console
+  components, so you can hover the timeline and mark blocks done without a
+  key. The console behind the access key is single-principal by design; the
+  screenshots below show the working loop. Light and dark themes throughout.
+- Screenshots ready in `article/screenshots/`: 00 landing page (generated
+  dawn-terrain hero), 01 game plan hero (timeline + replan bar), 02 full
+  five-section plan with block actions, 03 task pool with triage scores and
+  inline editing, 04 evening debrief questions, 05 after-action review with
+  learned preferences, 06 the Memory tab, 07 the light theme. [TODO:
+  optionally add the morning email from your inbox and a DynamoDB console
+  shot, then upload all to Builder Center.]
 
 ---
 
