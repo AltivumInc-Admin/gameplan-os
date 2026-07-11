@@ -12,6 +12,11 @@ work — so tomorrow's plan is smarter than today's.
 Built for the AWS Builder Center **Build a Productivity App Weekend Challenge**
 (July 10–13, 2026).
 
+![Game Plan OS - today's game plan with the day timeline and visible reserve](article/screenshots/01-gameplan-hero.png)
+
+Live app: https://main.dpg1b347fl82l.amplifyapp.com (single-user personal
+tool behind an access key; see `article/screenshots/` for the working loop).
+
 ## Why a game plan instead of a to-do list
 
 A to-do list is inventory. A plan is a decision. The military five-paragraph

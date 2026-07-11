@@ -158,9 +158,11 @@ scheduled event a day, one email a day.
 - **Live app:** https://main.dpg1b347fl82l.amplifyapp.com — deployed on
   Amplify Hosting with CI/CD from the repo. It is a single-principal personal
   tool behind an access key, so the screenshots below show the working loop.
-- [TODO: 3–4 screenshots: the game plan view with a real plan, the morning
-  email, the debrief's "what the agent learned about you" panel, DynamoDB
-  items]
+- Screenshots ready in `article/screenshots/`: 01 game plan hero (timeline +
+  mission), 02 full five-section plan, 03 task pool with triage scores,
+  04 evening debrief questions, 05 after-action review with two learned
+  preferences saved. [TODO: optionally add the morning email from your inbox
+  and a DynamoDB console shot, then upload all to Builder Center.]
 
 ---
 
