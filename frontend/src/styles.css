@@ -517,9 +517,12 @@ section.para li::marker { color: var(--faint); }
 
 /* ---------- priority groups / drops ---------- */
 
+/* Label column must fit the widest tag ("P3 · if the day allows"
+   measures 171px at 0.62rem mono + tracking); fixed width keeps the
+   text edge aligned across all groups. */
 .prio-group {
   display: grid;
-  grid-template-columns: 110px 1fr;
+  grid-template-columns: 188px 1fr;
   gap: 0.4rem 1rem;
   align-items: baseline;
   margin: 0.55rem 0;
@@ -552,7 +555,7 @@ section.para li::marker { color: var(--faint); }
 
 .signal-row {
   display: grid;
-  grid-template-columns: 110px 1fr;
+  grid-template-columns: 188px 1fr;
   gap: 0.2rem 1rem;
   margin: 0.5rem 0;
   align-items: baseline;
