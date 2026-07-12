@@ -1,7 +1,7 @@
 # Weekend Productivity Challenge: Game Plan OS — An AI That Plans Your Day Like a Mission
 
 <!-- Builder Center tag: #productivity -->
-<!-- Publish-ready draft; tweak voice anywhere. Screenshots: you upload 00-07
+<!-- Publish-ready draft; tweak voice anywhere. Screenshots: you upload 00-08
      from article/screenshots/ (plus inbox email / DynamoDB shots if desired). -->
 
 ## Vision & What the App Does
@@ -39,6 +39,13 @@ you have to remember to talk to. It runs on a daily rhythm:
   mission stays pinned, finished blocks stay history, and every new cut comes
   with a reason. If I disagree with something it dropped, one click challenges
   the cut and sends it back for renegotiation.
+- **And I can just say it.** An agent (Strands Agents SDK on Lambda) sits
+  behind a chat dock in the console and a Telegram bot, with the same verbs
+  the buttons have: "I wrapped the talking points, mark that block done" or
+  "a client call landed at 2pm, replan around it" — texted from anywhere —
+  updates the same plan. Every reply carries a receipt of the actions it
+  actually took, because a change you cannot verify is a change you cannot
+  trust.
 - **Every evening**, it debriefs me: three questions generated from that
   morning's actual order, never generic. An after-action review compares plan
   to reality, names what slipped and why, and — when a pattern shows up across
@@ -66,11 +73,12 @@ correct: the evening debrief, which really is an end-of-day situation report.
 
 The build ran Friday night to Saturday evening. Friday night went to the
 backend: SAM stack up (Lambda, DynamoDB, API Gateway, EventBridge Scheduler,
-SES), the first real game plan generated within the hour — one mission,
-five time blocks, two tasks explicitly dropped with reasons — and, once the
-verbs existed, the conversational agent on top of them. Saturday went to the
-learning loop, the console and its landing page, the rename, and making the
-plan answerable mid-day — with this article closing out the evening.
+SES), and the first real game plan generated within the hour — one mission,
+five time blocks, two tasks explicitly dropped with reasons. Saturday went
+to the learning loop, the console and its landing page, the rename, making
+the plan answerable mid-day, and — once those verbs existed — the
+conversational agent on top of them, with this article closing out the
+evening.
 
 The build ran backend-first, and the key decisions were mostly about what
 *not* to build:
@@ -151,7 +159,7 @@ wrong name and caught it in my own after-action review (see above).
 |---|---|
 | **Amazon Bedrock (Nova Pro + Nova Lite)** | The operations officer: order generation, after-action analysis (Pro); brain-dump triage (Lite) |
 | **AWS Lambda (Python 3.13)** | Two functions: the API router — which also hosts the Strands Agents SDK agent behind a vendored dependencies layer — and the scheduled morning brief |
-| **Amazon API Gateway (HTTP API)** | REST surface for dump / tasks / generate / debrief |
+| **Amazon API Gateway (HTTP API)** | REST surface for dump / tasks / generate / debrief / agent chat, plus the Telegram webhook |
 | **Amazon DynamoDB** | Single table: `TASK#`, `SITREP#`, `DEBRIEF#`, `PREF#` — the whole system state |
 | **Amazon EventBridge Scheduler** | Timezone-aware cron: 0530 America/Chicago, every day |
 | **Amazon SES** | Delivers the morning order to my inbox |
@@ -219,7 +227,8 @@ scheduled event a day, one email a day.
   working demo: it renders a sample morning brief with the real console
   components, so you can hover the timeline and mark blocks done without a
   key. The console behind the access key is single-principal by design; the
-  screenshots below show the working loop. Light and dark themes throughout.
+  screenshots below show the working loop, including the agent dock and its
+  action receipts. Light and dark themes throughout.
 - Screenshots ready in `article/screenshots/`: 00 landing page (generated
   dawn-terrain hero), 01 game plan hero (timeline + replan bar), 02 full
   five-section plan with block actions, 03 task pool with triage scores and
