@@ -55,11 +55,23 @@ sam deploy --guided
 #   TimeZone:          America/Chicago
 ```
 
-Note the `ApiUrl` output.
+Note the `ApiUrl`, `UserPoolId`, and `UserPoolClientId` outputs.
 
 The stack also creates an SNS topic subscribed to NotifyEmail for the
 morning-plan failure alarm — **confirm the SNS subscription email** when it
 arrives, or alarm notifications will not be delivered.
+
+Then create the owner account (self-signup is disabled; the console's
+sign-in is Cognito, while the ApiKey remains a service key for scripts):
+
+```bash
+aws cognito-idp admin-create-user --user-pool-id <UserPoolId> \
+  --username you@example.com \
+  --user-attributes Name=email,Value=you@example.com Name=email_verified,Value=true
+```
+
+Cognito emails a temporary password; the first sign-in on the site asks you
+to replace it.
 
 ## 4. Smoke test (5 minutes, catches 90% of problems)
 
@@ -97,9 +109,11 @@ Check your inbox for the game plan email.
 Primary path: connect the GitHub repo to Amplify Hosting. The repo's
 `amplify.yml` supplies all build settings (monorepo `frontend/` app root,
 Node 20, `npm ci`, `dist` artifacts) automatically. The one setting you must
-provide in Amplify is the branch environment variable `VITE_API_URL` set to
-the `ApiUrl` stack output — the build fails fast if it is missing. Every push
-to `main` then builds and deploys automatically.
+provide in Amplify are the environment variables `VITE_API_URL` (the
+`ApiUrl` stack output — the build fails fast if it is missing) plus
+`VITE_COGNITO_POOL_ID` and `VITE_COGNITO_CLIENT_ID` (the pool outputs, so
+the sign-in screen knows where to authenticate). Every push to `main` then
+builds and deploys automatically.
 
 Also pass your Amplify domain in the `AllowedOrigins` stack parameter so CORS
 admits the deployed frontend.
@@ -114,7 +128,8 @@ echo "VITE_API_URL=<ApiUrl>" > .env.production
 npm run build
 ```
 
-Open the app, enter your ApiKey at the gate, and walk the loop:
+Open the app, sign in with your invited account (or the ApiKey if Cognito
+variables were not set at build time), and walk the loop:
 dump → tasks → generate → brief → debrief.
 
 ## 7. Artifacts for the article (do these while everything is fresh)

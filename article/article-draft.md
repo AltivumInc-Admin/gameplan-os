@@ -132,11 +132,18 @@ and through a Telegram bot, and the same 0530 brief that lands in my inbox
 now lands in the chat. The interesting engineering was not the wiring — it
 was honesty, which gets its own war story below.
 
-**Deliberate cuts.** No Cognito, no calendar integration, no multi-user —
-a shared-secret header guards a single-principal tool. Every one of those
-features was a schedule risk with zero payoff for a weekend challenge.
-(Calendar and Todoist feeding the same brain are the obvious next phase,
-and the architecture leaves room for them.)
+**Deliberate cuts, and one I reversed.** No multi-user, no self-signup, no
+calendar integration — every one was a schedule risk with zero payoff for a
+weekend challenge. (Calendar and Todoist feeding the same brain are the
+obvious next phase, and the architecture leaves room for them.) The cut I
+reversed was auth: I started with a shared-secret header, and using the
+deployed app exposed the flaw — with a stored key there was no login, no
+logout, and no way to ever see your own homepage again. So the gate became
+a real owner sign-in: an invitation-only Cognito user pool, the SPA
+authenticating directly against it (no hosted UI, so the login screen keeps
+the app's design), and the Lambda verifying JWTs itself — an API Gateway
+authorizer on a catch-all route would have blocked CORS preflights and the
+Telegram webhook, which carry their own auth.
 
 The real snags, honestly: **DynamoDB rejected the model's JSON on the very
 first call** — Nova returns `effort_hours: 1.5` and boto3 will not accept a
@@ -163,6 +170,7 @@ wrong name and caught it in my own after-action review (see above).
 | **Amazon DynamoDB** | Single table: `TASK#`, `SITREP#`, `DEBRIEF#`, `PREF#` — the whole system state |
 | **Amazon EventBridge Scheduler** | Timezone-aware cron: 0530 America/Chicago, every day |
 | **Amazon SES** | Delivers the morning order to my inbox |
+| **Amazon Cognito** | Invitation-only user pool behind the console's sign-in; the Lambda verifies the JWTs |
 | **AWS Amplify Hosting** | Serves the React dashboard |
 
 The flow: brain dumps hit API Gateway → Lambda → Nova Lite → DynamoDB. At
@@ -226,9 +234,9 @@ scheduled event a day, one email a day.
   with CI/CD from the repo, behind a custom domain. The landing page itself is a
   working demo: it renders a sample morning brief with the real console
   components, so you can hover the timeline and mark blocks done without a
-  key. The console behind the access key is single-principal by design; the
-  screenshots below show the working loop, including the agent dock and its
-  action receipts. Light and dark themes throughout.
+  key. The console behind the owner sign-in is single-principal by design;
+  the screenshots below show the working loop, including the agent dock and
+  its action receipts. Light and dark themes throughout.
 - Screenshots ready in `article/screenshots/`: 00 landing page (generated
   dawn-terrain hero), 01 game plan hero (timeline + replan bar), 02 full
   five-section plan with block actions, 03 task pool with triage scores and
