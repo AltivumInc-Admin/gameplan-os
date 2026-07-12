@@ -247,7 +247,7 @@ scheduled event a day, one email a day.
   five-section plan with block actions, 03 task pool with triage scores and
   inline editing, 04 evening debrief questions, 05 after-action review with
   learned preferences, 06 the Memory tab, 07 the light theme, 08 the agent
-  dock mid-conversation with its action receipts.
+  dock mid-conversation with its action receipts, 09 the Connections tab.
 
 ---
 
