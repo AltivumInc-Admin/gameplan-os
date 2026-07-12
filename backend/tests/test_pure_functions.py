@@ -226,7 +226,8 @@ class ScrubTaskIdsTests(unittest.TestCase):
 
 
 class CarryBlockStatusesTests(unittest.TestCase):
-    """Replan keeps marks only for blocks already ended; the future is rebuilt."""
+    """Replan keeps marks only for already-ended blocks that the new plan
+    copied through unchanged; everything else is rebuilt and unmarked."""
 
     BLOCKS = [
         {"start": "08:00", "end": "09:30", "label": "past"},
@@ -236,18 +237,35 @@ class CarryBlockStatusesTests(unittest.TestCase):
 
     def test_past_kept_future_dropped(self):
         kept = service._carry_block_statuses(
-            self.BLOCKS, {"0": "done", "2": "done"}, "11:00")
+            self.BLOCKS, self.BLOCKS, {"0": "done", "2": "done"}, "11:00")
         self.assertEqual(kept, {"0": "done"})
 
     def test_block_ending_exactly_at_cutoff_kept(self):
-        kept = service._carry_block_statuses(self.BLOCKS, {"1": "skipped"}, "11:00")
+        kept = service._carry_block_statuses(
+            self.BLOCKS, self.BLOCKS, {"1": "skipped"}, "11:00")
         self.assertEqual(kept, {"1": "skipped"})
 
     def test_junk_keys_and_empty_input(self):
-        self.assertEqual(service._carry_block_statuses(self.BLOCKS, None, "12:00"), {})
+        self.assertEqual(
+            service._carry_block_statuses(self.BLOCKS, self.BLOCKS, None, "12:00"), {})
         kept = service._carry_block_statuses(
-            self.BLOCKS, {"nope": "done", "99": "done"}, "12:00")
+            self.BLOCKS, self.BLOCKS, {"nope": "done", "99": "done"}, "12:00")
         self.assertEqual(kept, {})
+
+    def test_mark_dropped_when_model_did_not_copy_the_block(self):
+        # Observed live: the model rebuilt the day with ONE new evening block
+        # instead of copying the finished morning; the old index-0 "done"
+        # must not decorate the brand-new block.
+        new_blocks = [{"start": "22:36", "end": "23:36", "label": "new work"}]
+        kept = service._carry_block_statuses(
+            self.BLOCKS, new_blocks, {"0": "done"}, "22:36")
+        self.assertEqual(kept, {})
+
+    def test_mark_kept_when_block_copied_even_if_label_reworded(self):
+        new_blocks = [dict(self.BLOCKS[0], label="reworded"), *self.BLOCKS[1:]]
+        kept = service._carry_block_statuses(
+            self.BLOCKS, new_blocks, {"0": "done"}, "11:00")
+        self.assertEqual(kept, {"0": "done"})
 
 
 class PreferenceIdTests(unittest.TestCase):

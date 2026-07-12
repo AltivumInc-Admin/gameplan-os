@@ -113,21 +113,31 @@ def _scrub_task_ids(body: dict, valid_ids: set[str]) -> None:
             entry["task_id"] = None
 
 
-def _carry_block_statuses(old_blocks: list, statuses: dict, cutoff_hhmm: str) -> dict:
-    """Keep status marks only for blocks that ended before the replan cutoff.
+def _carry_block_statuses(old_blocks: list, new_blocks: list, statuses: dict,
+                          cutoff_hhmm: str) -> dict:
+    """Keep status marks only for past blocks the new plan actually kept.
 
-    Replanning rewrites the future part of time_blocks, so indexes of
-    still-to-come blocks are meaningless afterward; past blocks are copied
-    through unchanged (same indexes) and keep their marks.
+    Replanning rewrites the future part of time_blocks; the prompt orders the
+    model to copy finished blocks through unchanged (same indexes). When it
+    obeys, marks carry. When it does not (observed live: a replan that
+    dropped the whole morning), an old mark must not land on whatever new
+    block happens to share the index - so a mark survives only if the block
+    at that index is the same block (same start and end) and ended before
+    the cutoff.
     """
     kept = {}
     for key, status in (statuses or {}).items():
         try:
             idx = int(key)
-            block = old_blocks[idx]
+            old = old_blocks[idx]
+            new = new_blocks[idx]
         except (ValueError, TypeError, IndexError):
             continue
-        if isinstance(block, dict) and str(block.get("end", "99:99")) <= cutoff_hhmm:
+        if not (isinstance(old, dict) and isinstance(new, dict)):
+            continue
+        if (str(old.get("end", "99:99")) <= cutoff_hhmm
+                and old.get("start") == new.get("start")
+                and old.get("end") == new.get("end")):
             kept[str(idx)] = status
     return kept
 
@@ -199,7 +209,8 @@ def replan_sitrep(note: str = "") -> dict:
     _finalize_plan(body, today, open_tasks)
 
     old_blocks = (current.get("body", {}).get("execution", {}) or {}).get("time_blocks") or []
-    carried = _carry_block_statuses(old_blocks, block_status, local_now)
+    new_blocks = (body.get("execution", {}) or {}).get("time_blocks") or []
+    carried = _carry_block_statuses(old_blocks, new_blocks, block_status, local_now)
     revision = int(current.get("revision") or 0) + 1
     db.put_sitrep(today, body, block_status=carried, revision=revision,
                   replanned_at=now.isoformat())

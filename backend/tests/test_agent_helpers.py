@@ -14,6 +14,7 @@ os.environ.setdefault("NOTIFY_EMAIL", "test@example.com")
 
 from agent import guards  # noqa: E402
 from common import db, telegram  # noqa: E402
+from prompts import triage_prompt  # noqa: E402
 
 
 class GuardsTests(unittest.TestCase):
@@ -112,6 +113,22 @@ class ParseUpdateTests(unittest.TestCase):
         update = {"update_id": 1, "edited_message": {
             "text": "hi", "chat": {"id": 5}}}
         self.assertIsNone(telegram.parse_update(update))
+
+
+class NextWeekTableTests(unittest.TestCase):
+    def test_weekend_resolution(self):
+        # 2026-07-11 is a Saturday; "Sunday" from it must be 2026-07-12.
+        # (Writing this test caught a human miscount, not a model one - the
+        # table exists so neither party does weekday math again.)
+        table = triage_prompt.next_week_table("2026-07-11")
+        self.assertIn("Sunday = 2026-07-12", table)
+        self.assertIn("Monday = 2026-07-13", table)
+        self.assertNotIn("2026-07-11", table)  # today itself is not "coming"
+
+    def test_seven_rows_crossing_month_end(self):
+        table = triage_prompt.next_week_table("2026-07-29")
+        self.assertEqual(len(table.splitlines()), 7)
+        self.assertIn("2026-08-01", table)
 
 
 class CapChatTests(unittest.TestCase):

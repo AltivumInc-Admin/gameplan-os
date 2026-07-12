@@ -66,11 +66,11 @@ correct: the evening debrief, which really is an end-of-day situation report.
 
 The build ran Friday night to Saturday evening. Friday night went to the
 backend: SAM stack up (Lambda, DynamoDB, API Gateway, EventBridge Scheduler,
-SES), and the first real game plan generated within the hour — one mission,
-five time blocks, two tasks explicitly dropped with reasons. Saturday went
-to the learning loop, the console and its landing page, the rename, making
-the plan answerable mid-day, and the agent layer — with this article closing
-out the evening.
+SES), the first real game plan generated within the hour — one mission,
+five time blocks, two tasks explicitly dropped with reasons — and, once the
+verbs existed, the conversational agent on top of them. Saturday went to the
+learning loop, the console and its landing page, the rename, and making the
+plan answerable mid-day — with this article closing out the evening.
 
 The build ran backend-first, and the key decisions were mostly about what
 *not* to build:
@@ -115,18 +115,29 @@ scheduling the new work at the current time, and moving the now-redundant
 item to the drop list with the reason quoted back — was the moment this
 stopped feeling like a demo.
 
+**An agent as a doorway, not a brain.** Once the plan was answerable, I put
+a conversational agent (Strands Agents SDK, in the same Lambda behind a
+vendored dependencies layer) on top of it: ten tools, every one a thin
+wrapper over a verb the product already had — list tasks, close one, mark a
+block, replan the rest of the day. It talks through a dock in the console
+and through a Telegram bot, and the same 0530 brief that lands in my inbox
+now lands in the chat. The interesting engineering was not the wiring — it
+was honesty, which gets its own war story below.
+
 **Deliberate cuts.** No Cognito, no calendar integration, no multi-user —
 a shared-secret header guards a single-principal tool. Every one of those
 features was a schedule risk with zero payoff for a weekend challenge.
-(Calendar, Todoist, and a Telegram channel to the same brain are the obvious
-next phase, and the architecture leaves room for them.)
+(Calendar and Todoist feeding the same brain are the obvious next phase,
+and the architecture leaves room for them.)
 
 The real snags, honestly: **DynamoDB rejected the model's JSON on the very
 first call** — Nova returns `effort_hours: 1.5` and boto3 will not accept a
 Python float, so every write path now runs a recursive float-to-Decimal
 conversion. **The triage model resolved relative dates wrong** ("by friday"
-landed on the wrong week) until the prompt included the weekday alongside the
-date — models are surprisingly bad at knowing what day of the week a date is.
+landed on the wrong week) until the prompt included the weekday alongside
+the date, and later a plain lookup table of the next seven days — models
+(and, I discovered while reviewing its output, humans) are surprisingly bad
+at weekday arithmetic, so the fix is to make it reading instead of math.
 And the biggest one was conceptual, not technical: I shipped a doctrinally
 wrong name and caught it in my own after-action review (see above).
 
@@ -139,7 +150,7 @@ wrong name and caught it in my own after-action review (see above).
 | Service | Role |
 |---|---|
 | **Amazon Bedrock (Nova Pro + Nova Lite)** | The operations officer: order generation, after-action analysis (Pro); brain-dump triage (Lite) |
-| **AWS Lambda (Python 3.13)** | Two functions: API router and the scheduled morning brief |
+| **AWS Lambda (Python 3.13)** | Two functions: the API router — which also hosts the Strands Agents SDK agent behind a vendored dependencies layer — and the scheduled morning brief |
 | **Amazon API Gateway (HTTP API)** | REST surface for dump / tasks / generate / debrief |
 | **Amazon DynamoDB** | Single table: `TASK#`, `SITREP#`, `DEBRIEF#`, `PREF#` — the whole system state |
 | **Amazon EventBridge Scheduler** | Timezone-aware cron: 0530 America/Chicago, every day |
@@ -149,9 +160,13 @@ wrong name and caught it in my own after-action review (see above).
 The flow: brain dumps hit API Gateway → Lambda → Nova Lite → DynamoDB. At
 0530, EventBridge Scheduler wakes the brief Lambda, which assembles context
 (open tasks, preferences, five most recent debriefs, yesterday's order),
-calls Nova Pro, persists the order, and mails it via SES. The evening debrief
-runs the same path in reverse: answers → Nova Pro after-action → task status
-updates and high-confidence preferences back into DynamoDB.
+calls Nova Pro, persists the order, and mails it via SES (and pushes it to
+Telegram). The evening debrief runs the same path in reverse: answers →
+Nova Pro after-action → task status updates and high-confidence preferences
+back into DynamoDB. The agent is a third doorway into the same flow: a
+message from the console dock or the Telegram webhook reaches a Strands
+agent whose ten tools wrap the same service layer, so "I finished the memo,
+replan my afternoon" mutates the same DynamoDB plan the console renders.
 
 Everything except Bedrock usage beyond the trial sits comfortably in the Free
 Tier for a single user: pay-per-request DynamoDB, two small Lambdas, one
@@ -174,15 +189,26 @@ scheduled event a day, one email a day.
   entirely on whether the doctrine rules give it permission to be decisive.
 - **The agent layer was thin, because the verbs already existed.** I expected
   wiring a conversational agent (Strands Agents SDK in a Lambda, Telegram as
-  the channel) to be the hardest lift of the weekend. It was the easiest —
-  because every tool the agent needed already existed as a product verb with
-  an addressable API: list tasks, close one, mark a block done, replan the
-  rest of the day. The lesson generalizes: make the product answerable first,
-  and an agent is just a new doorway into the same room. The genuine surprise
-  was channel economics, not code — a Telegram bot is live in minutes and can
-  message you first, while US SMS is a weeks-long carrier-registration
-  project. Channel choice turned out to be a regulatory decision, not a
-  technical one.
+  the channel) to be the hardest lift of the weekend. The wiring was the
+  easiest part — every tool the agent needed already existed as a product
+  verb with an addressable API: list tasks, close one, mark a block done,
+  replan the rest of the day. Make the product answerable first, and an
+  agent is just a new doorway into the same room.
+- **The hard part of the agent was honesty, and prompts alone did not fix
+  it.** In live testing, Nova Pro would answer "the task has been dropped"
+  without ever calling the tool — pattern-completing from conversation
+  context — and once that false confirmation entered the chat history, it
+  defended it ("already dropped") on every following turn. Prompt rules
+  helped; they did not hold. What held was structure: the runtime compares
+  the reply against the tools that actually ran, and a claimed change with
+  no tool call triggers a retry on a fresh context — because the poisoned
+  history is precisely what teaches the model to keep lying — and if even
+  that round claims without acting, the user gets an honest "I changed
+  nothing" instead. Trust the receipt, never the prose. (A smaller surprise
+  was channel economics: a Telegram bot is live in minutes and can message
+  you first, while US SMS is a weeks-long carrier-registration project.
+  Channel choice turned out to be a regulatory decision, not a technical
+  one.)
 
 ## Link to App & Repo
 
@@ -198,7 +224,8 @@ scheduled event a day, one email a day.
   dawn-terrain hero), 01 game plan hero (timeline + replan bar), 02 full
   five-section plan with block actions, 03 task pool with triage scores and
   inline editing, 04 evening debrief questions, 05 after-action review with
-  learned preferences, 06 the Memory tab, 07 the light theme.
+  learned preferences, 06 the Memory tab, 07 the light theme, 08 the agent
+  dock mid-conversation with its action receipts.
 
 ---
 

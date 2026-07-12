@@ -34,6 +34,15 @@ they differ from the defaults (`us.amazon.nova-pro-v1:0`, `us.amazon.nova-lite-v
 
 ## 3. Deploy the backend
 
+First build the agent dependencies layer (vendors the Strands Agents SDK
+into `backend/layer/`; the template's `AgentDependenciesLayer` ships it):
+
+```bash
+./scripts/build-agent-layer.sh
+```
+
+Then deploy:
+
 ```bash
 sam build
 sam deploy --guided
@@ -115,6 +124,27 @@ dump → tasks → generate → brief → debrief.
 - Screenshot: DynamoDB items (PK/SK view showing TASK/SITREP/DEBRIEF/PREF)
 - Screenshot: CloudWatch log of one generation (shows the Converse call)
 - Optional 60-second screen recording of the full loop
+
+## 8. Optional: the Telegram channel
+
+The agent works in the console with zero extra setup. To also text it:
+
+1. In Telegram, talk to **@BotFather** -> `/newbot` -> copy the token.
+2. Generate a webhook secret: `openssl rand -hex 24`.
+3. Redeploy with `TelegramBotToken` and `TelegramWebhookSecret` set
+   (leave `TelegramChatId` empty for now).
+4. Point Telegram at the webhook:
+
+   ```bash
+   curl -s "https://api.telegram.org/bot<TOKEN>/setWebhook" \
+     -d url=<ApiUrl>/agent/telegram -d secret_token=<SECRET>
+   ```
+
+5. Send your bot `/start`. It replies with your chat id because the bot is
+   unclaimed. Redeploy once more with `TelegramChatId` set to that id.
+
+From then on the bot answers only you, and the 0530 brief is pushed to the
+same chat alongside the email.
 
 ## Troubleshooting
 

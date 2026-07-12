@@ -4,6 +4,7 @@ Input: free-form text dump. Output: discrete tasks with urgency/impact/effort
 scores. This is deliberately a separate, cheap call so the user can dump
 thoughts all day without invoking the expensive reasoning model.
 """
+import datetime
 import json
 
 SYSTEM = """You are a task triage officer. You convert a raw brain dump into
@@ -22,6 +23,20 @@ discrete, actionable tasks. Rules:
 Respond with ONLY valid JSON."""
 
 
+def next_week_table(today_iso: str) -> str:
+    """The next seven days as 'Weekday = date' lines.
+
+    Models are unreliable at weekday arithmetic even when told today's
+    weekday (observed live: 'due Sunday' on a Friday night resolved to
+    Saturday's date). A lookup table makes it reading, not math.
+    """
+    start = datetime.date.fromisoformat(today_iso)
+    return "\n".join(
+        f"  {(start + datetime.timedelta(days=i)):%A} = "
+        f"{(start + datetime.timedelta(days=i)).isoformat()}"
+        for i in range(1, 8))
+
+
 def build_user_prompt(dump: str, today: str, known_projects: list[str]) -> str:
     schema = {
         "tasks": [{
@@ -34,6 +49,8 @@ def build_user_prompt(dump: str, today: str, known_projects: list[str]) -> str:
         }]
     }
     return f"""TODAY: {today}
+COMING DAYS (use this to resolve any relative date like "friday" or "next week"):
+{next_week_table(today.split(" ")[0])}
 KNOWN PROJECTS: {json.dumps(known_projects)}
 
 BRAIN DUMP:
