@@ -10,6 +10,9 @@ NOVA_PRO_MODEL_ID = os.environ.get("NOVA_PRO_MODEL_ID", "us.amazon.nova-pro-v1:0
 NOVA_LITE_MODEL_ID = os.environ.get("NOVA_LITE_MODEL_ID", "us.amazon.nova-lite-v1:0")
 USER_ID = os.environ.get("USER_ID", "primary")
 LOCAL_TZ = os.environ.get("LOCAL_TZ", "America/Chicago")
+# Cognito session auth (empty means JWT auth is off and only the key works).
+COGNITO_POOL_ID = os.environ.get("COGNITO_POOL_ID", "")
+COGNITO_CLIENT_ID = os.environ.get("COGNITO_CLIENT_ID", "")
 # Telegram channel is optional: empty values disable the webhook and the
 # morning push without breaking anything else.
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")

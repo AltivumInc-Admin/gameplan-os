@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { getKey, setKey } from './api'
+import { hasCredentials, setKey } from './api'
+import { signOut as cognitoSignOut } from './auth'
 import AgentDock from './components/AgentDock'
 import Landing from './components/Landing'
 import ThemeToggle from './components/ThemeToggle'
@@ -12,13 +13,13 @@ type Tab = 'brief' | 'tasks' | 'debrief' | 'memory'
 
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone
 
-function Brand() {
+function Brand({ onHome }: { onHome?: () => void }) {
   return (
-    <div className="brand">
+    <button className="brand" type="button" onClick={onHome} title="Back to the homepage">
       <span className="brand-mark" aria-hidden="true" />
       <span className="brand-name">GAME PLAN OS</span>
       <span className="brand-sub">your daily game plan</span>
-    </div>
+    </button>
   )
 }
 
@@ -47,25 +48,44 @@ const TABS: { id: Tab; label: string }[] = [
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('brief')
-  const [authed, setAuthed] = useState(Boolean(getKey()))
+  const [authed, setAuthed] = useState(hasCredentials())
+  // The homepage always loads first; the console is a place you go, not a
+  // screen you are trapped in. (Signed-in visitors previously never saw the
+  // landing page at all.)
+  const [view, setView] = useState<'landing' | 'console'>('landing')
 
   useEffect(() => {
-    const onUnauthorized = () => setAuthed(false)
+    const onUnauthorized = () => {
+      setAuthed(false)
+      setView('landing')
+    }
     window.addEventListener('sitrep-unauthorized', onUnauthorized)
     return () => window.removeEventListener('sitrep-unauthorized', onUnauthorized)
   }, [])
 
-  if (!authed) return <Landing onEnter={() => setAuthed(true)} />
+  if (view === 'landing' || !authed) {
+    return (
+      <Landing
+        authed={authed}
+        onEnter={() => {
+          setAuthed(true)
+          setView('console')
+        }}
+      />
+    )
+  }
 
   const signOut = () => {
+    void cognitoSignOut()
     setKey('')
     setAuthed(false)
+    setView('landing')
   }
 
   return (
     <div className="shell">
       <header className="top">
-        <Brand />
+        <Brand onHome={() => setView('landing')} />
         <div className="top-right">
           <Clock />
           <ThemeToggle />
@@ -110,9 +130,9 @@ export default function App() {
           <button
             className="mini ghost"
             onClick={signOut}
-            title="Forget the access key stored in this browser"
+            title="End this session on this browser"
           >
-            change key
+            sign out
           </button>
         </span>
       </footer>

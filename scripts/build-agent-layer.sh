@@ -9,7 +9,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 rm -rf backend/layer/python
-python3.13 -m pip install strands-agents \
+python3.13 -m pip install strands-agents PyJWT \
   --target backend/layer/python \
   --platform manylinux2014_x86_64 \
   --python-version 3.13 \

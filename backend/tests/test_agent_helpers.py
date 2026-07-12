@@ -13,7 +13,7 @@ os.environ.setdefault("TABLE_NAME", "test-table")
 os.environ.setdefault("NOTIFY_EMAIL", "test@example.com")
 
 from agent import guards  # noqa: E402
-from common import db, telegram  # noqa: E402
+from common import auth, db, telegram  # noqa: E402
 from prompts import triage_prompt  # noqa: E402
 
 
@@ -129,6 +129,26 @@ class NextWeekTableTests(unittest.TestCase):
         table = triage_prompt.next_week_table("2026-07-29")
         self.assertEqual(len(table.splitlines()), 7)
         self.assertIn("2026-08-01", table)
+
+
+class CheckClaimsTests(unittest.TestCase):
+    """Pure claim validation for Cognito access tokens (signature, expiry,
+    and issuer are the JWT library's job; this is the token-shape gate)."""
+
+    def test_valid_access_token_claims(self):
+        self.assertTrue(auth.check_claims(
+            {"token_use": "access", "client_id": "abc123"}, "abc123"))
+
+    def test_id_token_rejected(self):
+        self.assertFalse(auth.check_claims(
+            {"token_use": "id", "client_id": "abc123"}, "abc123"))
+
+    def test_foreign_client_rejected(self):
+        self.assertFalse(auth.check_claims(
+            {"token_use": "access", "client_id": "someone-else"}, "abc123"))
+
+    def test_missing_claims_rejected(self):
+        self.assertFalse(auth.check_claims({}, "abc123"))
 
 
 class CapChatTests(unittest.TestCase):

@@ -41,6 +41,23 @@ TELEGRAM_WELCOME = (
     "\"what's my plan\" any time. Send /reset to start a fresh conversation.")
 
 
+def _authorized(headers: dict) -> bool:
+    """Two accepted credentials: a Cognito access token (the console after
+    sign-in) or the static service key (scripts, smoke tests)."""
+    bearer = headers.get("authorization", "")
+    if bearer.lower().startswith("bearer "):
+        # Lazy import: PyJWT lives in the dependencies layer.
+        from common import auth
+        if auth.verify_bearer(bearer[7:].strip()):
+            return True
+    # Empty API_KEY means misconfiguration; deny rather than letting
+    # empty == empty pass. Compare bytes so a non-ASCII pasted key degrades
+    # to a 401, not a TypeError 500.
+    supplied = headers.get("x-sitrep-key", "").encode("utf-8", "surrogatepass")
+    return bool(config.API_KEY) and hmac.compare_digest(
+        supplied, config.API_KEY.encode("utf-8"))
+
+
 def _agent_turn(channel: str, message: str) -> dict:
     # Imported lazily: strands lives in a Lambda layer attached to this
     # function only, and only agent routes pay its import cost.
@@ -149,13 +166,8 @@ def handler(event, _context):
         except Exception as exc:
             traceback.print_exc()
             return _resp(500, {"error": str(exc)})
-    # Empty API_KEY means misconfiguration; deny everything rather than
-    # letting empty == empty pass. Compare bytes so a non-ASCII pasted key
-    # degrades to a 401, not a TypeError 500.
-    supplied = headers.get("x-sitrep-key", "").encode("utf-8", "surrogatepass")
-    if not config.API_KEY or not hmac.compare_digest(
-            supplied, config.API_KEY.encode("utf-8")):
-        return _resp(401, {"error": "missing or invalid x-sitrep-key"})
+    if not _authorized(headers):
+        return _resp(401, {"error": "sign in required (or provide a valid x-sitrep-key)"})
 
     body = {}
     if event.get("body"):

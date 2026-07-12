@@ -161,6 +161,15 @@ header.top {
   gap: 0.65rem;
   font-family: var(--mono);
 }
+/* In the console header the brand is a button that returns to the homepage;
+   in the landing bar it stays inert chrome. */
+button.brand {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+}
 
 .brand-mark {
   width: 11px;
@@ -1269,6 +1278,9 @@ select.cell-input {
 .gate-form { position: relative; z-index: 1; max-width: 460px; }
 .gate-form .key-row { display: flex; gap: 0.6rem; align-items: stretch; margin-top: 0.4rem; }
 .gate-form .key-row input { margin: 0; font-family: var(--mono); font-size: 0.85rem; }
+.gate-form .gate-fields { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.4rem; }
+.gate-form .gate-fields > input { margin: 0; font-family: var(--mono); font-size: 0.85rem; }
+.gate-form .gate-fields .key-row { margin-top: 0; }
 .gate-form .key-hint { color: var(--faint); font-size: 0.74rem; margin-top: 0.6rem; }
 
 .land-deploy { margin-top: 1.6rem; font-size: 0.85rem; }

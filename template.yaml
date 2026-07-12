@@ -66,6 +66,40 @@ Globals:
 
 Resources:
 
+  # Single-owner auth: self-signup disabled, the owner is invited by email.
+  # The SPA signs in with USER_PASSWORD_AUTH directly (no hosted UI) so the
+  # login screen keeps the app's own design.
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: gameplan-os-users
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      UsernameConfiguration:
+        CaseSensitive: false
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: gameplan-os-console
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      AccessTokenValidity: 12
+      IdTokenValidity: 12
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      PreventUserExistenceErrors: ENABLED
+
   SitrepTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
@@ -93,6 +127,7 @@ Resources:
         AllowHeaders:
           - content-type
           - x-sitrep-key
+          - authorization
         AllowMethods:
           - GET
           - POST
@@ -128,6 +163,8 @@ Resources:
       Environment:
         Variables:
           API_KEY: !Ref ApiKey
+          COGNITO_POOL_ID: !Ref UserPool
+          COGNITO_CLIENT_ID: !Ref UserPoolClient
           TELEGRAM_BOT_TOKEN: !Ref TelegramBotToken
           TELEGRAM_CHAT_ID: !Ref TelegramChatId
           TELEGRAM_WEBHOOK_SECRET: !Ref TelegramWebhookSecret
@@ -239,3 +276,9 @@ Outputs:
     Value: !Sub 'https://${SitrepHttpApi}.execute-api.${AWS::Region}.amazonaws.com'
   TableName:
     Value: !Ref SitrepTable
+  UserPoolId:
+    Description: Cognito user pool id (set as VITE_COGNITO_POOL_ID in the frontend).
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Description: Cognito app client id (set as VITE_COGNITO_CLIENT_ID in the frontend).
+    Value: !Ref UserPoolClient

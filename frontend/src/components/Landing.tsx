@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, setKey, type BlockStatus } from '../api'
+import { cognitoConfigured, completeNewPassword, signIn } from '../auth'
 import ThemeToggle from './ThemeToggle'
 import { DayTimeline, ParaHead, type Sitrep } from './SitrepView'
 import heroLarge from '../assets/hero-dawn.jpg'
@@ -224,22 +225,54 @@ function DemoBrief() {
 
 // ---------------------------------------------------------------------------
 
-function GateForm({ onEnter }: { onEnter: () => void }) {
-  const [value, setValue] = useState('')
+function GateForm({ authed, onEnter }: { authed: boolean; onEnter: () => void }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  // A non-empty challenge session means the invitation's temporary password
+  // was accepted and a permanent one must be chosen now.
+  const [challenge, setChallenge] = useState('')
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState('')
 
+  if (authed) {
+    return (
+      <div className="gate-form">
+        <div className="key-row">
+          <button className="primary" onClick={onEnter}>
+            Open the console
+          </button>
+        </div>
+        <p className="key-hint">You are signed in on this browser.</p>
+      </div>
+    )
+  }
+
   const submit = async () => {
-    const key = value.trim()
-    if (!key || checking) return
+    if (checking) return
     setChecking(true)
     setError('')
-    setKey(key)
     try {
-      // Probe a cheap authenticated endpoint so a wrong key fails here,
-      // at the gate, instead of as cryptic errors inside every view.
-      await api.tasks('open')
-      onEnter()
+      if (challenge) {
+        if (newPassword.length < 8) throw new Error('Pick a password of at least 8 characters.')
+        await completeNewPassword(email.trim(), newPassword, challenge)
+        onEnter()
+        return
+      }
+      if (!cognitoConfigured()) {
+        // Local dev without Cognito build vars: the password field takes the
+        // service key directly.
+        setKey(password.trim())
+        await api.tasks('open')
+        onEnter()
+        return
+      }
+      const outcome = await signIn(email.trim(), password)
+      if (outcome.ok) {
+        onEnter()
+      } else {
+        setChallenge(outcome.newPasswordSession)
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -255,35 +288,83 @@ function GateForm({ onEnter }: { onEnter: () => void }) {
         submit()
       }}
     >
-      <div className="key-row">
-        <input
-          type="password"
-          name="access-key"
-          id="access-key"
-          autoComplete="current-password"
-          value={value}
-          placeholder="access key"
-          aria-label="Access key"
-          onChange={(e) => setValue(e.target.value)}
-        />
-        <button className="primary" type="submit" disabled={checking}>
-          {checking ? 'Checking' : 'Enter'}
-        </button>
-      </div>
+      {challenge ? (
+        <>
+          <div className="gate-fields">
+            <input
+              type="password"
+              name="new-password"
+              id="new-password"
+              autoComplete="new-password"
+              value={newPassword}
+              placeholder="choose a new password"
+              aria-label="New password"
+              onChange={(e) => setNewPassword(e.target.value)}
+            />
+            <button className="primary" type="submit" disabled={checking}>
+              {checking ? 'Saving' : 'Set password and enter'}
+            </button>
+          </div>
+          <p className="key-hint">
+            First sign-in: replace the temporary password from your invitation
+            email with one of your own.
+          </p>
+        </>
+      ) : (
+        <>
+          <div className="gate-fields">
+            {cognitoConfigured() && (
+              <input
+                type="email"
+                name="email"
+                id="email"
+                autoComplete="username"
+                value={email}
+                placeholder="email"
+                aria-label="Email"
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            )}
+            <div className="key-row">
+              <input
+                type="password"
+                name="current-password"
+                id="current-password"
+                autoComplete="current-password"
+                value={password}
+                placeholder={cognitoConfigured() ? 'password' : 'access key'}
+                aria-label={cognitoConfigured() ? 'Password' : 'Access key'}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <button className="primary" type="submit" disabled={checking}>
+                {checking ? 'Checking' : 'Sign in'}
+              </button>
+            </div>
+          </div>
+          {error === '' && (
+            <p className="key-hint">
+              Owner sign-in. Accounts are created by invitation; nothing here
+              is shared infrastructure.
+            </p>
+          )}
+        </>
+      )}
       {error && (
         <p className="error" role="alert">
           {error}
         </p>
       )}
-      <p className="key-hint">
-        The key you chose when deploying the backend. It is stored only in this
-        browser.
-      </p>
     </form>
   )
 }
 
-export default function Landing({ onEnter }: { onEnter: () => void }) {
+export default function Landing({
+  authed,
+  onEnter,
+}: {
+  authed: boolean
+  onEnter: () => void
+}) {
   const heroImg = useRef<HTMLImageElement | null>(null)
   const gateRef = useRef<HTMLDivElement | null>(null)
   const demoRef = useRef<HTMLDivElement | null>(null)
@@ -325,8 +406,11 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
         </div>
         <div className="land-top-right">
           <ThemeToggle />
-          <button className="mini ghost" onClick={() => scrollTo(gateRef)}>
-            Enter console
+          <button
+            className="mini ghost"
+            onClick={() => (authed ? onEnter() : scrollTo(gateRef))}
+          >
+            {authed ? 'Open console' : 'Sign in'}
           </button>
         </div>
       </header>
@@ -356,8 +440,11 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
             <button className="primary" onClick={() => scrollTo(demoRef)}>
               See it decide
             </button>
-            <button className="ghost hero-ghost" onClick={() => scrollTo(gateRef)}>
-              Enter the console
+            <button
+              className="ghost hero-ghost"
+              onClick={() => (authed ? onEnter() : scrollTo(gateRef))}
+            >
+              {authed ? 'Open the console' : 'Sign in'}
             </button>
           </div>
         </div>
@@ -457,10 +544,10 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
           <ParaHead num="5" title="Command &amp; Signal" plain="take command" />
           <p className="land-lede">
             Game Plan OS is single-tenant by design: it runs on your own AWS
-            account, and your tasks, plans, and debriefs never leave it. Enter
-            with your access key, or deploy your own from the source.
+            account, and your tasks, plans, and debriefs never leave it. Sign
+            in as the owner, or deploy your own from the source.
           </p>
-          <GateForm onEnter={onEnter} />
+          <GateForm authed={authed} onEnter={onEnter} />
           <p className="land-deploy">
             <a href="https://github.com/AltivumInc-Admin/gameplan-os">
               Deploy your own &mdash; source on GitHub

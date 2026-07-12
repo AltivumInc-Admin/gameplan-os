@@ -1,5 +1,8 @@
-// Thin API client. Base URL comes from VITE_API_URL at build time;
-// the shared key is entered once in the UI and kept in localStorage.
+// Thin API client. Base URL comes from VITE_API_URL at build time.
+// Auth: a Cognito session (Authorization bearer) is preferred; the legacy
+// service key in localStorage still works for pre-Cognito sessions.
+
+import { accessToken, clearSession, getSession, refreshSession } from './auth'
 
 const BASE = import.meta.env.VITE_API_URL as string
 
@@ -10,22 +13,35 @@ export function setKey(k: string) {
   localStorage.setItem('sitrep-key', k)
 }
 
-async function req(method: string, path: string, body?: unknown) {
+export function hasCredentials(): boolean {
+  return Boolean(getSession() || getKey())
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' }
+  const token = await accessToken()
+  if (token) headers.authorization = `Bearer ${token}`
+  else if (getKey()) headers['x-sitrep-key'] = getKey()
+  return headers
+}
+
+async function req(method: string, path: string, body?: unknown, retried = false) {
   const res = await fetch(`${BASE}${path}`, {
     method,
-    headers: {
-      'content-type': 'application/json',
-      'x-sitrep-key': getKey(),
-    },
+    headers: await authHeaders(),
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   if (res.status === 401) {
-    // The stored key is no longer valid (e.g. rotated on redeploy):
-    // drop it and let the app fall back to the gate instead of scattering
-    // raw 401 strings across every view.
+    // One silent refresh-and-retry for an expired session; after that the
+    // credentials are dead (signed out elsewhere, rotated key): clear them
+    // and fall back to the front door instead of scattering raw 401s.
+    if (!retried && getSession() && (await refreshSession())) {
+      return req(method, path, body, true)
+    }
+    clearSession()
     setKey('')
     window.dispatchEvent(new Event('sitrep-unauthorized'))
-    throw new Error('Access key not accepted. Enter it again.')
+    throw new Error('Your session ended. Sign in again.')
   }
   if (!res.ok) {
     const text = await res.text()
