@@ -59,6 +59,10 @@ Terms: https://builder.aws.com/content/3GJsgI65jiG5A6sJLGe5VouAZZ3/aws-builder-c
   IDs are SAM parameters (`NovaProModelId`, `NovaLiteModelId`), not hardcoded.
 - Region: use us-east-1 unless there's a reason not to (broadest Bedrock +
   AgentCore availability).
+- Account: never rely on the ambient `AWS_PROFILE`; on the owner's machine it
+  points at a different account than this stack. SAM takes the pinned profile
+  and region from the local, gitignored `samconfig.toml`; pass that same
+  `--profile` and `--region us-east-1` on every `aws` CLI call.
 - No Cognito, no OAuth, no multi-user, no calendar integration in Phase 1.
   Every one of those is a schedule risk with zero qualifying value.
 - Keep JSON-mode discipline: all model calls go through
